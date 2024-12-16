@@ -27,6 +27,8 @@ class TestFormatConversionCombinations:
     # all of these one test, but then it can get confusing to debug so
     # I am making one test for each format that then tests converting to
     # all other formats.
+    # Eileen comment: Agreed to have separate for more straightforward
+    # debugging.
     @pytest.mark.parametrize("target_format", BASE_FORMATS)
     def test_convert_blast(self, lightguide_blast, target_format):
         """Test that the base blast can be converted to all formats."""
@@ -74,7 +76,7 @@ class TestDASCorePatch:
     @pytest.fixture(scope="class")
     def dascore_base_das(self, dascore_patch):
         """The converted DASCore patch."""
-        return convert(dascore_patch, "unidas.BaseDAS")
+        return convert(dascore_patch, to="unidas.BaseDAS")
 
     def test_to_base_das(self, dascore_base_das):
         """Ensure we can convert DASCore patch to BaseDAS."""
@@ -82,7 +84,7 @@ class TestDASCorePatch:
 
     def test_from_base_das(self, dascore_base_das, dascore_patch):
         """Test the conversion back to DASCore Patch from BaseDAS."""
-        out = convert(dascore_base_das, "dascore.Patch")
+        out = convert(dascore_base_das, to="dascore.Patch")
         assert isinstance(out, dc.Patch)
         assert out == dascore_patch
 
@@ -94,6 +96,7 @@ class TestDASPySection:
     def daspy_base_das(self, daspy_section):
         """The default daspy section converted to BaseDAS instance."""
         return convert(daspy_section, "unidas.BaseDAS")
+    # TO DO: Why is the to= left off in these convert calls? style?
 
     def test_to_base_das(self, daspy_base_das):
         """Ensure the base section can be converted to BaseDAS."""
@@ -171,17 +174,39 @@ class TestAdapter:
     """Tests for adapter decorator."""
 
     def test_conversion(self, dascore_patch):
-        """Simple conversion test."""
+        """Simple conversion tests."""
+
+        @adapter("xdas.DataArray")
+        def da_function(da):
+            """Dummy DataArray function."""
+            assert isinstance(da, xdas.DataArray)
+            return da
+
+        patch = dascore_patch.transpose("distance", "time")
+        out = da_function(patch)
+        assert isinstance(out, dc.Patch)
+
 
         @adapter("daspy.Section")
         def section_function(sec):
-            """Dummy section function."""
+            """Dummy Section function."""
             assert isinstance(sec, daspy.Section)
             return sec
 
-        patch = dascore_patch.transpose("distance", "time")
-        out = section_function(patch)
-        assert isinstance(out, dc.Patch)
+        out2 = section_function(patch)
+        assert isinstance(out2, dc.Patch) 
+
+
+        @adapter("lightguide.Blast")
+        def blast_function(blast):
+            """Dummy Blast function."""
+            assert isinstance(blast, lightguide.Blast)
+            return sec
+
+        out3 = blast_function(patch)
+        assert isinstance(out3, dc.Patch) 
+
+
 
     def test_wrapping(self):
         """
@@ -199,9 +224,52 @@ class TestAdapter:
         # This should simply return the original function
         new = adapter("dascore.Patch")(my_patch_func)
         assert new is my_patch_func
+
         # But this should wrap it again.
+        new1 = adapter("xdas.DataArray")(my_patch_func)
+        assert new1 is not my_patch_func
+        # The raw function should remain unchanged.
+        assert new1.raw_function is my_patch_func.raw_function
+        assert new.raw_function is my_patch_func.raw_function
+
+        # And this should wrap it again.
         new2 = adapter("daspy.Section")(my_patch_func)
         assert new2 is not my_patch_func
         # The raw function should remain unchanged.
         assert new2.raw_function is my_patch_func.raw_function
-        assert new.raw_function is my_patch_func.raw_function
+
+        # And this should wrap it one more time.
+        new3 = adapter("lightguide.Blast")(my_patch_func)
+        assert new3 is not my_patch_func
+        # The raw function should remain unchanged.
+        assert new3.raw_function is my_patch_func.raw_function
+
+
+    def test_wrap_results(self):
+        """
+        Ensure that the results of a function applied to a converted patch
+        are the same as if it were applied directly to the patch.
+        TO DO: create example patch with same contents as starting point,
+        maybe all constants?
+        """
+
+        from xdas.signal import integrate
+        # carry out integration 
+        dascore_int = unidas.adapter("xdas")(integrate)
+        uniformdc = unidas.get_uniform_patch() # TO DO: change to standard patch
+        patch = dascore_int(uniformdc) # TO DO: will this work or is pipe needed?
+        # Do the same thing directly on DataArray
+        uniformxd = unidas.get_uniform_da() # TO DO: change to standard data array
+        da = integrate(uniformxd)
+        patchFromDa = unidas.convert(da, to="dascore.Patch")
+        # check that converted patch -> DataArray matches DataArray
+        assert np.all(patchFromDa.data == patch.data)
+        # TODO the str rep of coords are equal but not coords themselves.
+        # Need to look into this. Same comment as check above
+        assert str(patchFromDa.coords) == str(patch.coords)
+        assert patchFromDa.attrs == patch.attrs
+        assert patchFromDa.dims == patch.dims
+
+        # TO DO: Add a similar tests for other packages
+
+
