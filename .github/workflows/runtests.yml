@@ -41,27 +41,12 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v3
 
-      - name: Setup tmate session
-        uses: mxschmitt/action-tmate@v3
-#
-#      - name: run setup env
-#        run: |
-#          uv venv unidas --python ${{ matrix.python-version }}
-#          source unidas/bin/activate
-#          uv pip install -e .[dev]
-
-#      - name: print installed packages
-#        run: uv tree
-
-#      - name: Setup tmate session
-#        uses: mxschmitt/action-tmate@v3
-
       - name: run pytest
-        run: uv run pytest -s --cov src --cov-append --cov-report=xml
+        run: uv run --all-extras pytest -s --cov src --cov-append --cov-report=xml
 
       # Runs examples in docstrings
       - name: test docstrings
-        run: uv run pytest src --doctest-modules
+        run: uv run --all-extras pytest src --doctest-modules
 
       # Upload coverage files
       - uses: codecov/codecov-action@v5

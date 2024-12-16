@@ -41,7 +41,9 @@ keywords = ["geophysics", "distributed-acoustic-sensing"]
 
 # --- Dependencies
 
-dependencies = []
+dependencies = [
+    "numpy"
+]
 
 [project.optional-dependencies]
 
