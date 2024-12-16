@@ -46,7 +46,7 @@ jobs:
 
       # Runs examples in docstrings
       - name: test docstrings
-        run: uv run --all-extras pytest src --doctest-modules
+        run: uv run --all-extras --python ${{ matrix.python-version }} pytest src --doctest-modules
 
       # Upload coverage files
       - uses: codecov/codecov-action@v5
