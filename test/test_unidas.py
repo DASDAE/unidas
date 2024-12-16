@@ -127,7 +127,8 @@ class TestXdasDataArray:
         # TODO the str rep of coords are equal but not coords themselves.
         # Need to look into this.
         assert str(out.coords) == str(xdas_dataarray.coords)
-        assert out.attrs == xdas_dataarray.attrs
+        attr1, attr2 = out.attrs, xdas_dataarray.attrs
+        assert attr1 == attr2 or (not attr1 and not attr2)
         assert out.dims == xdas_dataarray.dims
 
 
