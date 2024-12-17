@@ -1,4 +1,10 @@
 # unidas
+
+[![coverage](https://codecov.io/gh/dasdae/unidas/branch/main/graph/badge.svg)](https://codecov.io/gh/dasdae/unidas)
+[![PyPI Version](https://img.shields.io/pypi/v/unidas.svg)](https://pypi.python.org/pypi/unidas)
+[![supported versions](https://img.shields.io/pypi/pyversions/unidas.svg?label=python_versions)](https://pypi.python.org/pypi/unidas)
+[![Licence](https://img.shields.io/badge/license-MIT-blue)](https://opensource.org/license/mit)
+
 A DAS compatibility package.
 
 There is an increasing number of open-source libraries for working with distributed acoustic sensing (DAS) data. Each of these has its own strengths and weaknesses, and often it is desirable to use features from multiple libraries in research workflows. Moreover, creators of DAS packages which perform specific operations (e.g., machine learning for phase picking) currently have to choose a single DAS library to support, or undertake writing conversion codes on their own.
