@@ -2,6 +2,8 @@
 Pytest configuration and global fixtures for unidas.
 """
 
+import platform
+
 import dascore as dc
 import daspy
 import pooch
@@ -22,6 +24,8 @@ def daspy_section():
 
 
 @pytest.fixture(scope="session")
+# Currently, lightguide doesn't install on windows in CI. Just skip.
+@pytest.mark.skipif(platform.system() == "Windows")
 def lightguide_blast():
     """Get a Blast from lightguide."""
     from lightguide.blast import Blast
