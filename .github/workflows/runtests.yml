@@ -42,7 +42,7 @@ jobs:
         uses: astral-sh/setup-uv@v3
 
       - name: run pytest
-        run: uv run --all-extras pytest -s --cov src --cov-append --cov-report=xml
+        run: uv run --all-extras --python ${{ matrix.python-version }} pytest -s --cov src --cov-append --cov-report=xml
 
       # Runs examples in docstrings
       - name: test docstrings
