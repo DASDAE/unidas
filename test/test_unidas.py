@@ -2,13 +2,26 @@
 Tests for core functionality of unidas.
 """
 
+import platform
+
 import dascore as dc
 import daspy
 import numpy as np
 import pytest
-from lightguide.blast import Blast
+import unidas
 from unidas import BaseDAS, adapter, convert, optional_import
 from xdas.core.dataarray import DataArray
+
+try:
+    from lightguide.blast import Blast
+
+except ImportError:
+
+    class Blast:
+        """A dummy blast."""
+
+
+ON_WINDOWS = platform.system().lower() == "windows"
 
 # A tuple of format names for testing generic conversions.
 NAME_CLASS_MAP = {
@@ -20,36 +33,16 @@ NAME_CLASS_MAP = {
 BASE_FORMATS = tuple(NAME_CLASS_MAP)
 
 
-class TestFormatConversionCombinations:
-    """Tests for combinations of different formats."""
+# --- Tests for unidas utilities.
 
-    # Note: we could also parametrize the base structure fixtures to make
-    # all of these one test, but then it can get confusing to debug so
-    # I am making one test for each format that then tests converting to
-    # all other formats.
-    @pytest.mark.parametrize("target_format", BASE_FORMATS)
-    def test_convert_blast(self, lightguide_blast, target_format):
-        """Test that the base blast can be converted to all formats."""
-        out = convert(lightguide_blast, to=target_format)
-        assert isinstance(out, NAME_CLASS_MAP[target_format])
 
-    @pytest.mark.parametrize("target_format", BASE_FORMATS)
-    def test_convert_patch(self, dascore_patch, target_format):
-        """Test that the base patch can be converted to all formats."""
-        out = convert(dascore_patch, to=target_format)
-        assert isinstance(out, NAME_CLASS_MAP[target_format])
-
-    @pytest.mark.parametrize("target_format", BASE_FORMATS)
-    def test_convert_data_array(self, xdas_dataarray, target_format):
-        """Test that the base data array can be converted to all formats."""
-        out = convert(xdas_dataarray, to=target_format)
-        assert isinstance(out, NAME_CLASS_MAP[target_format])
-
-    @pytest.mark.parametrize("target_format", BASE_FORMATS)
-    def test_convert_section(self, daspy_section, target_format):
-        """Test that the base section can be converted to all formats."""
-        out = convert(daspy_section, to=target_format)
-        assert isinstance(out, NAME_CLASS_MAP[target_format])
+@pytest.fixture(params=BASE_FORMATS)
+def format_name(request):
+    """Fixture for returning format names."""
+    name = request.param
+    if ON_WINDOWS and name.startswith("lightguide"):
+        pytest.skip("waveguide does not support windows")
+    return request.param
 
 
 class TestOptionalImport:
@@ -66,6 +59,46 @@ class TestOptionalImport:
         """Ensure a module which is missing raises the appropriate Error."""
         with pytest.raises(ImportError, match="boblib4"):
             optional_import("boblib4")
+
+
+class TestMisc:
+    """Miscellaneous tests for unidas."""
+
+    def test_version(self):
+        """Simply ensure unidas has a version attribute."""
+        assert hasattr(unidas, "__version__")
+        assert isinstance(unidas.__version__, str)
+
+
+# --------- Tests for unidas conversions.
+
+
+class TestFormatConversionCombinations:
+    """Tests for combinations of different formats."""
+
+    # Note: we could also parametrize the base structure fixtures to make
+    # all of these one test, but then it can get confusing to debug so
+    # I am making one test for each format that then tests converting to
+    # all other formats.
+    def test_convert_blast(self, lightguide_blast, format_name):
+        """Test that the base blast can be converted to all formats."""
+        out = convert(lightguide_blast, to=format_name)
+        assert isinstance(out, NAME_CLASS_MAP[format_name])
+
+    def test_convert_patch(self, dascore_patch, format_name):
+        """Test that the base patch can be converted to all formats."""
+        out = convert(dascore_patch, to=format_name)
+        assert isinstance(out, NAME_CLASS_MAP[format_name])
+
+    def test_convert_data_array(self, xdas_dataarray, format_name):
+        """Test that the base data array can be converted to all formats."""
+        out = convert(xdas_dataarray, to=format_name)
+        assert isinstance(out, NAME_CLASS_MAP[format_name])
+
+    def test_convert_section(self, daspy_section, format_name):
+        """Test that the base section can be converted to all formats."""
+        out = convert(daspy_section, to=format_name)
+        assert isinstance(out, NAME_CLASS_MAP[format_name])
 
 
 class TestDASCorePatch:
@@ -134,6 +167,12 @@ class TestXdasDataArray:
 
 class TestLightGuideBlast:
     """Tests for Blast Conversions."""
+
+    @pytest.fixture(scope="class", autouse=True)
+    def skip_on_windows(self):
+        """Skip tests if on windows."""
+        if ON_WINDOWS:
+            pytest.skip("Lightguide doesn't support windows")
 
     @pytest.fixture(scope="class")
     def lightguide_base_das(self, lightguide_blast):

@@ -65,7 +65,7 @@ pip install unidas
 mamba install unidas
 ```
 
-By design, unidas has no hard dependencies, but an `ImportError` will be raised if the libraries needed to perform a requested conversion are not installed.
+By design, unidas has no hard dependencies other than numpy, but an `ImportError` will be raised if the libraries needed to perform a requested conversion are not installed.
 
 Unidas is single file (src/unidas.py) so it can also be vendored (copied directly into your project). If you do this, please consider sharing any improvements so the entire community can benefit. 
 

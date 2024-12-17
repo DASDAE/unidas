@@ -8,7 +8,7 @@ from __future__ import annotations
 
 # Unidas version indicator. When incrementing, be sure to update
 # pyproject.toml as well.
-__version___ = "0.0.1"
+__version__ = "0.0.0"
 
 # Explicitly defines unidas' public API.
 # https://peps.python.org/pep-0008/#public-and-internal-interfaces
@@ -25,6 +25,8 @@ from functools import cache, wraps
 from types import ModuleType
 from typing import Any, ClassVar, Protocol, TypeVar, runtime_checkable
 
+import numpy as np
+
 # Define the urls to each project to provide helpful error messages.
 PROJECT_URLS = {
     "dascore": "https://github.com/dasdae/dascore",
@@ -32,6 +34,8 @@ PROJECT_URLS = {
     "lightguide": "https://github.com/pyrocko/lightguide",
     "xdas": "https://github.com/xdas-dev/xdas",
 }
+
+DT_PRECISION = datetime.datetime.resolution.total_seconds()
 
 # A generic type variable.
 T = TypeVar("T")
@@ -60,7 +64,7 @@ def optional_import(package_name: str) -> ModuleType:
     >>> dc = optional_import('unidas')
     >>> try:
     ...     optional_import('boblib5')  # doesn't exist so this raises
-    ... except MissingOptionalDependencyError:
+    ... except ImportError:
     ...     pass
     """
     try:
@@ -111,7 +115,6 @@ def extract_attrs(obj, attrs_names):
 
 def time_to_float(obj):
     """Converts a datetime or numpy datetime object to float."""
-    np = optional_import("numpy")
     if isinstance(obj, np.datetime64) or isinstance(obj, np.timedelta64):
         obj = obj.astype("timedelta64") / np.timedelta64(1, "s")
     elif hasattr(obj, "timestamp"):
@@ -121,11 +124,22 @@ def time_to_float(obj):
 
 def time_to_datetime(obj):
     """Convert a time-like object to a datetime object."""
+    if isinstance(obj, np.datetime64) and DT_PRECISION > 1e-9:
+        # On python 3.10 this can fail since the default time precision is
+        # for datetime.datetime is us not ns. Need to truncate to us precision.
+        # TODO: need to look into daspy's DASUTC to see if it can handle ns.
+        obj = obj.astype("datetime64[us]")
     if not isinstance(obj, datetime.datetime):
         # Lightguide expects a timezone to be attached, so we attach utc.
         utc = zoneinfo.ZoneInfo("UTC")
         obj = datetime.datetime.fromisoformat(str(obj)).astimezone(utc)
     return obj
+
+
+def to_stripped_utc(time: datetime.datetime):
+    """Convert a datetime to UTC then strip timezone info"""
+    out = time.astimezone(zoneinfo.ZoneInfo("UTC")).replace(tzinfo=None)
+    return out
 
 
 @runtime_checkable
@@ -215,12 +229,11 @@ class EvenlySampledCoordinate(Coordinate):
     def to_xdas_coord(self):
         """Convert to an XDAS coordinate."""
         xcoords = optional_import("xdas.core.coordinates")
-        np = optional_import("numpy")
         # Currently, xdas expects a number or numpy datatime, need to convert
         # python datetimes to numpy.
         tie_values = self.tie_values
         if isinstance(self.tie_values[0], datetime.datetime):
-            tie_values = [np.datetime64(x) for x in tie_values]
+            tie_values = [np.datetime64(to_stripped_utc(x)) for x in tie_values]
         data = {"tie_indices": self.tie_indices, "tie_values": tie_values}
         out = xcoords.InterpCoordinate(data=data)
         return out

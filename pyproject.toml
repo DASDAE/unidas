@@ -21,7 +21,8 @@ include-package-data = true
 
 [project]
 name = "unidas"
-version = "0.0.1"
+
+version = "0.0.0" # Make sure to bump dascore.__version__ as well!
 
 authors = [
   { name="Derrick Chambers", email="chambers.ja.derrick@gmail.com" },
@@ -40,7 +41,9 @@ keywords = ["geophysics", "distributed-acoustic-sensing"]
 
 # --- Dependencies
 
-dependencies = []
+dependencies = [
+    "numpy"
+]
 
 [project.optional-dependencies]
 
@@ -57,6 +60,7 @@ test = [
     "pytest",
     "ruff",
     "pooch",
+    "pytest-cov",
 ]
 
 dev = ["unidas[test]", "unidas[extras]"]
