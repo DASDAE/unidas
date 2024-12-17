@@ -30,7 +30,6 @@ authors = [
 
 description = "A DAS compatibility library"
 readme = "README.md"
-license = { file="LICENSE" }
 requires-python = ">=3.10"
 classifiers = [
     "License :: OSI Approved :: MIT License",
