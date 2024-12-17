@@ -27,7 +27,7 @@ def daspy_section():
 # Currently, lightguide doesn't install on windows in CI. Just skip.
 def lightguide_blast():
     """Get a Blast from lightguide."""
-    if platform.system() == "windows":
+    if platform.system().lower() == "windows":
         pytest.skip("Lightguide is not supported on Windows")
 
     from lightguide.blast import Blast
