@@ -34,11 +34,12 @@ You can also use `adpater` to wrap un-wrapped functions.
 ```python
 import dascore as dc
 import unidas
-from xdas.spectral import stft
+from xdas.signal import hilbert
 
-dascore_stft = unidas.adapter("xdas")(stft)
+dascore_hilbert = unidas.adapter("xdas.DataArray")(hilbert)
+patch = dc.get_example_patch()
 
-patch_stft = dc.get_example_patch().pipe(dascore_stft)
+patch_hilberto = dascore_hilbert(patch)
 ```
 
 The `convert` function converts from one library's data structure to another library's data structure.
@@ -82,12 +83,11 @@ For example:
 ```python
 import unidas
 
-
 @unidas.adapter("daspy.Section")
 def fancy_machine_learning_function(sec):
     """Cutting edge machine learning DAS research function."""
     # Here we will use daspy internally, but the function accepts 
-    # data structures from other libraries with no additional effort.
+    # data structures from other libraries with no additional effort
     # because of the adapter decorator. 
     
     ...  # Fancy stuff goes here.

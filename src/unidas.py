@@ -232,6 +232,7 @@ class EvenlySampledCoordinate(Coordinate):
         # Currently, xdas expects a number or numpy datatime, need to convert
         # python datetimes to numpy.
         tie_values = self.tie_values
+        # Tie values currently have to be either datetimes or floats
         if isinstance(self.tie_values[0], datetime.datetime):
             tie_values = [np.datetime64(to_stripped_utc(x)) for x in tie_values]
         data = {"tie_indices": self.tie_indices, "tie_values": tie_values}
@@ -429,7 +430,11 @@ class Converter:
                     visited[neighbor] = current
                     queue.append(neighbor)
         # No path found, raise exception.
-        msg = f"No conversion path from {start} to {target} found."
+        msg = (
+            f"No conversion path from {start} to {target} found. "
+            f"{target} may not be a valid conversion target. Valid targets "
+            f"are: {sorted(list(Converter._registry.keys()))}."
+        )
         raise ValueError(msg)
 
 
@@ -504,7 +509,7 @@ class DASCorePatchConverter(Converter):
         """Convert a coordinate to base coordinates."""
         if coord.evenly_sampled:
             tie_inds = (0, len(coord) - 1)
-            tie_vals = (coord.start, coord.stop)
+            tie_vals = (coord.start, coord.stop - coord.step)
             return EvenlySampledCoordinate(
                 tie_values=tie_vals,
                 tie_indices=tie_inds,

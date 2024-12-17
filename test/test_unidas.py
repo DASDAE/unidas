@@ -119,6 +119,15 @@ class TestDASCorePatch:
         assert isinstance(out, dc.Patch)
         assert out == dascore_patch
 
+    def test_to_xdas_time_coord(self, dascore_patch):
+        """
+        Ensure we can convert to xdas DataArray and the time coords are equal.
+        """
+        out = convert(dascore_patch, "xdas.DataArray")
+        time_coord1 = dascore_patch.get_array("time")
+        time_coord2 = out.coords["time"].values
+        assert np.all(time_coord1 == time_coord2)
+
 
 class TestDASPySection:
     """Test suite for converting DASPy sections."""
@@ -245,3 +254,44 @@ class TestAdapter:
         # The raw function should remain unchanged.
         assert new2.raw_function is my_patch_func.raw_function
         assert new.raw_function is my_patch_func.raw_function
+
+
+class TestIntegrations:
+    """Tests for integrating different data structures."""
+
+    def test_readme_1(self):
+        """First test for readme examples."""
+        if ON_WINDOWS:
+            pytest.skip("Lightguide doesn't support windows")
+        sec = daspy.read()
+        blast = unidas.convert(sec, to="lightguide.Blast")
+        blast.afk_filter(exponent=0.8)
+        sec_out = unidas.convert(blast, to="daspy.Section")
+        assert isinstance(sec_out, daspy.Section)
+
+    def test_readme_2(self, dascore_patch):
+        """Second test for readme examples."""
+        from xdas.signal import hilbert
+
+        dascore_hilbert = unidas.adapter("xdas.DataArray")(hilbert)
+
+        patch_hilberto = dascore_hilbert(dascore_patch)
+        assert patch_hilberto.shape == dascore_patch.shape
+
+        # The dimensions and coordinates should not have been changed.
+        assert dascore_patch.dims == patch_hilberto.dims
+        for dim in dascore_patch.dims:
+            coord_1 = dascore_patch.get_array(dim)
+            coord_2 = patch_hilberto.get_array(dim)
+            assert np.all(coord_1 == coord_2)
+
+    def test_readme_3(self, dascore_patch):
+        """The third tests for readme code."""
+
+        @unidas.adapter("daspy.Section")
+        def daspy_function(sec, **kwargs):
+            """A useful daspy function"""
+            return sec
+
+        out = daspy_function(dascore_patch)
+        assert isinstance(out, dc.Patch)
