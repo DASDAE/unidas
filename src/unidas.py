@@ -124,7 +124,7 @@ def time_to_float(obj):
 
 def time_to_datetime(obj):
     """Convert a time-like object to a datetime object."""
-    if isinstance(obj, np.datetime64) and DT_PRECISION > 1e9:
+    if isinstance(obj, np.datetime64) and DT_PRECISION > 1e-9:
         # On python 3.10 this can fail since the default time precision is
         # for datetime.datetime is us not ns. Need to truncate to us precision.
         # TODO: need to look into daspy's DASUTC to see if it can handle ns.
