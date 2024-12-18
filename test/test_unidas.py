@@ -7,6 +7,7 @@ import platform
 import dascore as dc
 import daspy
 import numpy as np
+import pandas as pd
 import pytest
 import unidas
 from unidas import BaseDAS, adapter, convert, optional_import
@@ -73,34 +74,6 @@ class TestMisc:
 # --------- Tests for unidas conversions.
 
 
-class TestFormatConversionCombinations:
-    """Tests for combinations of different formats."""
-
-    # Note: we could also parametrize the base structure fixtures to make
-    # all of these one test, but then it can get confusing to debug so
-    # I am making one test for each format that then tests converting to
-    # all other formats.
-    def test_convert_blast(self, lightguide_blast, format_name):
-        """Test that the base blast can be converted to all formats."""
-        out = convert(lightguide_blast, to=format_name)
-        assert isinstance(out, NAME_CLASS_MAP[format_name])
-
-    def test_convert_patch(self, dascore_patch, format_name):
-        """Test that the base patch can be converted to all formats."""
-        out = convert(dascore_patch, to=format_name)
-        assert isinstance(out, NAME_CLASS_MAP[format_name])
-
-    def test_convert_data_array(self, xdas_dataarray, format_name):
-        """Test that the base data array can be converted to all formats."""
-        out = convert(xdas_dataarray, to=format_name)
-        assert isinstance(out, NAME_CLASS_MAP[format_name])
-
-    def test_convert_section(self, daspy_section, format_name):
-        """Test that the base section can be converted to all formats."""
-        out = convert(daspy_section, to=format_name)
-        assert isinstance(out, NAME_CLASS_MAP[format_name])
-
-
 class TestDASCorePatch:
     """Test suite for converting DASCore Patches."""
 
@@ -128,6 +101,11 @@ class TestDASCorePatch:
         time_coord2 = out.coords["time"].values
         assert np.all(time_coord1 == time_coord2)
 
+    def test_convert_patch_to_other(self, dascore_patch, format_name):
+        """Test that the base patch can be converted to all formats."""
+        out = convert(dascore_patch, to=format_name)
+        assert isinstance(out, NAME_CLASS_MAP[format_name])
+
 
 class TestDASPySection:
     """Test suite for converting DASPy sections."""
@@ -145,9 +123,15 @@ class TestDASPySection:
         """Ensure the default section can round-trip."""
         out = convert(daspy_base_das, "daspy.Section")
         # TODO these objects aren't equal but their strings are.
-        # Need to fix this.
+        # We need to fix this.
+        # assert out == daspy_section
         assert str(out) == str(daspy_section)
         assert np.all(out.data == daspy_section.data)
+
+    def test_convert_section(self, daspy_section, format_name):
+        """Test that the base section can be converted to all formats."""
+        out = convert(daspy_section, to=format_name)
+        assert isinstance(out, NAME_CLASS_MAP[format_name])
 
 
 class TestXdasDataArray:
@@ -162,12 +146,17 @@ class TestXdasDataArray:
         """Ensure the example data_array can be converted to BaseDAS."""
         assert isinstance(xdas_base_das, BaseDAS)
 
+    def test_convert_data_array_to_other(self, xdas_dataarray, format_name):
+        """Test that the base data array can be converted to all formats."""
+        out = convert(xdas_dataarray, to=format_name)
+        assert isinstance(out, NAME_CLASS_MAP[format_name])
+
     def test_from_base_das(self, xdas_base_das, xdas_dataarray):
         """Ensure xdas DataArray can round trip."""
         out = convert(xdas_base_das, "xdas.DataArray")
         assert np.all(out.data == xdas_dataarray.data)
         # TODO the str rep of coords are equal but not coords themselves.
-        # Need to look into this.
+        # We need to look into this.
         assert str(out.coords) == str(xdas_dataarray.coords)
         attr1, attr2 = out.attrs, xdas_dataarray.attrs
         assert attr1 == attr2 or (not attr1 and not attr2)
@@ -197,13 +186,18 @@ class TestLightGuideBlast:
         out = convert(lightguide_base_das, "lightguide.Blast")
         # TODO here the objects also do not compare equal. Need to figure out
         # why. For now just do weaker checks.
-        # assert np.all(out.data == lightguide_blast.data)
+        # assert out == lightguide_blast
         assert out.start_time == lightguide_blast.start_time
         assert np.all(out.data == lightguide_blast.data)
         assert out.unit == lightguide_blast.unit
         assert out.channel_spacing == lightguide_blast.channel_spacing
         assert out.start_channel == lightguide_blast.start_channel
         assert out.sampling_rate == lightguide_blast.sampling_rate
+
+    def test_convert_blast_to_other(self, lightguide_blast, format_name):
+        """Test that the base blast can be converted to all formats."""
+        out = convert(lightguide_blast, to=format_name)
+        assert isinstance(out, NAME_CLASS_MAP[format_name])
 
 
 class TestConvert:
@@ -254,6 +248,17 @@ class TestAdapter:
         # The raw function should remain unchanged.
         assert new2.raw_function is my_patch_func.raw_function
         assert new.raw_function is my_patch_func.raw_function
+
+    def test_different_return_type(self, daspy_section):
+        """Ensure wrapped functions that return different types still work."""
+
+        @adapter("dascore.Patch")
+        def dummy_func(patch):
+            """Dummy function that returns dataframe."""
+            return dc.spool(patch).get_contents()
+
+        out = dummy_func(daspy_section)
+        assert isinstance(out, pd.DataFrame)
 
 
 class TestIntegrations:

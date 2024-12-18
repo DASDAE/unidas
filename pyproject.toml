@@ -13,7 +13,7 @@ packages = ["src/unidas.py"]
 [project]
 name = "unidas"
 
-version = "0.0.0" # Make sure to bump dascore.__version__ as well!
+version = "0.0.1" # Make sure to bump dascore.__version__ as well!
 
 authors = [
   { name="Derrick Chambers", email="chambers.ja.derrick@gmail.com" },

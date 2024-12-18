@@ -1,14 +1,12 @@
 """
-Core functionality for unidas.
-
-Currently, the base representation is a dictionary of the following form.
+Unidas: A DAS Compatibility Package.
 """
 
 from __future__ import annotations
 
 # Unidas version indicator. When incrementing, be sure to update
 # pyproject.toml as well.
-__version__ = "0.0.0"
+__version__ = "0.0.1"
 
 # Explicitly defines unidas' public API.
 # https://peps.python.org/pep-0008/#public-and-internal-interfaces
@@ -19,7 +17,7 @@ import importlib
 import inspect
 import zoneinfo
 from collections import defaultdict, deque
-from collections.abc import Mapping, Sequence, Sized
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache, wraps
 from types import ModuleType
@@ -35,6 +33,7 @@ PROJECT_URLS = {
     "xdas": "https://github.com/xdas-dev/xdas",
 }
 
+# Datetime precision. This can change between python versions.
 DT_PRECISION = datetime.datetime.resolution.total_seconds()
 
 # A generic type variable.
@@ -82,7 +81,7 @@ def optional_import(package_name: str) -> ModuleType:
 
 def converts_to(target: str):
     """
-    A decorator which marks a method as conversion function.
+    Marks a method on a `Converter` as a conversion function.
 
     Parameters
     ----------
@@ -99,8 +98,12 @@ def converts_to(target: str):
     return decorator
 
 
-def get_object_key(object_class):
-    """Get the tuple which defines the objects unique id."""
+def get_class_key(object_class) -> str:
+    """
+    Get a string which defines the class's identifier.
+
+    The general format is "{package_name}.{class_name}".
+    """
     module_name = object_class.__module__.split(".")[0]
     class_name = object_class.__name__
     return f"{module_name}.{class_name}"
@@ -114,7 +117,7 @@ def extract_attrs(obj, attrs_names):
 
 
 def time_to_float(obj):
-    """Converts a datetime or numpy datetime object to float."""
+    """Converts a datetime or numpy datetime object to a float (timestamp)."""
     if isinstance(obj, np.datetime64) or isinstance(obj, np.timedelta64):
         obj = obj.astype("timedelta64") / np.timedelta64(1, "s")
     elif hasattr(obj, "timestamp"):
@@ -137,13 +140,13 @@ def time_to_datetime(obj):
 
 
 def to_stripped_utc(time: datetime.datetime):
-    """Convert a datetime to UTC then strip timezone info"""
+    """Convert a datetime to UTC then strip timezone info."""
     out = time.astimezone(zoneinfo.ZoneInfo("UTC")).replace(tzinfo=None)
     return out
 
 
 @runtime_checkable
-class ArrayLike(Protocol, Sized):
+class ArrayLike(Protocol):
     """
     Simple definition of an array for now.
     """
@@ -183,7 +186,7 @@ class Coordinate(ArrayLike):
 @dataclass
 class EvenlySampledCoordinate(Coordinate):
     """
-    A coordinate which is evenly sampled and contiguous.
+    A coordinate which is evenly sampled, sorted, and contiguous.
 
     Parameters
     ----------
@@ -247,6 +250,8 @@ class EvenlySampledCoordinate(Coordinate):
 class ArrayCoordinate(Coordinate):
     """
     A coordinate which is not evenly sampled and contiguous.
+
+    The coordinate is represented by a generic array.
 
     Parameters
     ----------
@@ -345,7 +350,7 @@ class Converter:
     conversion methods with the `converts_to` decorator.
     """
 
-    name: str = None  # should be "{module}.{class_name}" see get_object_key.
+    name: str = None  # should be "{module}.{class_name}" see get_class_key.
     _registry: ClassVar[dict[str, Converter]] = {}
     _graph: ClassVar[dict[str, list[str]]] = defaultdict(list)
     _converters: ClassVar[dict[str, callable]] = {}
@@ -378,7 +383,8 @@ class Converter:
 
         Some conversions are lossy. This optional method allows subclasses
         to modify the output of `convert` before it gets returned. This might
-        be useful to re-attach lost metadata for example.
+        be useful to re-attach lost metadata for example. It doesn't work with
+        the `convert` function (in that case it needs to be applied manually).
 
         Parameters
         ----------
@@ -425,6 +431,8 @@ class Converter:
                     path.append(current)
                     current = visited[current]
                 return tuple(path[::-1])
+            # TODO: Maybe add a check for DASBase here so that is tried
+            # before other potential conversion paths.
             for neighbor in graph[current]:
                 if neighbor not in visited:
                     visited[neighbor] = current
@@ -711,12 +719,19 @@ def adapter(to: str):
             # Convert the incoming object to target. This should do nothing
             # if it is already the correct format.
             cls = obj if inspect.isclass(obj) else type(obj)
-            key = get_object_key(cls)
+            key = get_class_key(cls)
+            conversion_class: Converter = Converter._registry[key]
             input_obj = convert(obj, to)
-            out = func(input_obj, *args, **kwargs)
-            output_obj = convert(out, key)
-
-            return output_obj
+            func_out = func(input_obj, *args, **kwargs)
+            cls_out = obj if inspect.isclass(func_out) else type(func_out)
+            # Sometimes a function can return a different type than its input
+            # e.g., a dataframe. In this case just return output.
+            if get_class_key(cls_out) != to:
+                return func_out
+            output_obj = convert(func_out, key)
+            # Apply class specific logic to compensate for lossy conversion.
+            out = conversion_class.post_conversion(input_obj, output_obj)
+            return out
 
         # Following the convention of pydantic, we attach the raw function
         # in case it needs to be accessed later. Also ensures to keep the
@@ -748,7 +763,7 @@ def convert(obj, to: str):
     The input object converted to the specified format.
     """
     obj_class = obj if inspect.isclass(obj) else type(obj)
-    key = get_object_key(obj_class)
+    key = get_class_key(obj_class)
     # No conversion needed, simply return object.
     if key == to:
         return obj

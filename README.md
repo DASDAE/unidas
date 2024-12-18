@@ -2,7 +2,6 @@
 
 [![coverage](https://codecov.io/gh/dasdae/unidas/branch/main/graph/badge.svg)](https://codecov.io/gh/dasdae/unidas)
 [![PyPI Version](https://img.shields.io/pypi/v/unidas.svg)](https://pypi.python.org/pypi/unidas)
-[![supported versions](https://img.shields.io/pypi/pyversions/unidas.svg?label=python_versions)](https://pypi.python.org/pypi/unidas)
 [![Licence](https://img.shields.io/badge/license-MIT-blue)](https://opensource.org/license/mit)
 
 A DAS compatibility package.
