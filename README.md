@@ -115,5 +115,5 @@ Feel free to open a discussion if you need help.
 
 - [DASCore](https://github.com/DASDAE/dascore)
 - [DASPy](https://github.com/HMZ-03/DASPy)
-- [lightguide](https://github.com/pyrocko/lightguide)
+- [Lightguide](https://github.com/pyrocko/lightguide)
 - [Xdas](https://github.com/xdas-dev/xdas)
