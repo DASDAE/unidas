@@ -723,9 +723,10 @@ def adapter(to: str):
             conversion_class: Converter = Converter._registry[key]
             input_obj = convert(obj, to)
             func_out = func(input_obj, *args, **kwargs)
+            cls_out = obj if inspect.isclass(func_out) else type(func_out)
             # Sometimes a function can return a different type than its input
             # e.g., a dataframe. In this case just return output.
-            if not isinstance(func_out, cls):
+            if get_class_key(cls_out) != to:
                 return func_out
             output_obj = convert(func_out, key)
             # Apply class specific logic to compensate for lossy conversion.
