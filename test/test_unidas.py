@@ -7,6 +7,7 @@ import platform
 import dascore as dc
 import daspy
 import numpy as np
+import pandas as pd
 import pytest
 import unidas
 from unidas import BaseDAS, adapter, convert, optional_import
@@ -247,6 +248,17 @@ class TestAdapter:
         # The raw function should remain unchanged.
         assert new2.raw_function is my_patch_func.raw_function
         assert new.raw_function is my_patch_func.raw_function
+
+    def test_different_return_type(self, daspy_section):
+        """Ensure wrapped functions that return different types still work."""
+
+        @adapter("dascore.Patch")
+        def dummy_func(patch):
+            """Dummy function that returns dataframe."""
+            return dc.spool(patch).get_contents()
+
+        out = dummy_func(daspy_section)
+        assert isinstance(out, pd.DataFrame)
 
 
 class TestIntegrations:
