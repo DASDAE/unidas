@@ -17,7 +17,7 @@ import importlib
 import inspect
 import zoneinfo
 from collections import defaultdict, deque
-from collections.abc import Mapping, Sequence, Sized
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache, wraps
 from types import ModuleType
@@ -40,6 +40,7 @@ DT_PRECISION = datetime.datetime.resolution.total_seconds()
 T = TypeVar("T")
 
 # ------------------------ Utility functions
+
 
 def optional_import(package_name: str) -> ModuleType:
     """
@@ -97,7 +98,7 @@ def converts_to(target: str):
     return decorator
 
 
-def get_class_key(object_class)->str:
+def get_class_key(object_class) -> str:
     """
     Get a string which defines the class's identifier.
 

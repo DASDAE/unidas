@@ -12,8 +12,6 @@ import unidas
 from unidas import BaseDAS, adapter, convert, optional_import
 from xdas.core.dataarray import DataArray
 
-from test.conftest import dascore_patch
-
 try:
     from lightguide.blast import Blast
 
