@@ -6,7 +6,7 @@ from __future__ import annotations
 
 # Unidas version indicator. When incrementing, be sure to update
 # pyproject.toml as well.
-__version__ = "0.0.0"
+__version__ = "0.0.1"
 
 # Explicitly defines unidas' public API.
 # https://peps.python.org/pep-0008/#public-and-internal-interfaces
