@@ -38,7 +38,8 @@ keywords = ["geophysics", "distributed-acoustic-sensing"]
 # --- Dependencies
 
 dependencies = [
-    "numpy"
+    "numpy>=1.26; python_version < '3.13'",
+    "numpy>=2; python_version >= '3.13'",
 ]
 
 [project.optional-dependencies]
@@ -46,9 +47,10 @@ dependencies = [
 extras = [
     "dascore",
     "daspy-toolbox",
-    "lightguide; platform_system != 'Windows'",
+    "lightguide; platform_system != 'Windows' and python_version < '3.13'",
     "xdas",
-    "numpy<2"  # This is due to pyrocko. Remove when it has a new release.
+    # This is due to pyrocko. Remove when it has a new release.
+    "numpy<2; python_version < '3.13'",
 ]
 
 test = [

@@ -19,12 +19,17 @@ try:
     from lightguide.blast import Blast
 
 except ImportError:
+    LIGHTGUIDE_AVAILABLE = False
 
     class Blast:
         """A dummy blast."""
 
+else:
+    LIGHTGUIDE_AVAILABLE = True
+
 
 ON_WINDOWS = platform.system().lower() == "windows"
+LIGHTGUIDE_SUPPORTED = not ON_WINDOWS and LIGHTGUIDE_AVAILABLE
 
 # A tuple of format names for testing generic conversions.
 NAME_CLASS_MAP = {
@@ -72,8 +77,8 @@ def assert_array_equal_with_nan(array_1, array_2):
 def format_name(request):
     """Fixture for returning format names."""
     name = request.param
-    if ON_WINDOWS and name.startswith("lightguide"):
-        pytest.skip("waveguide does not support windows")
+    if name.startswith("lightguide") and not LIGHTGUIDE_SUPPORTED:
+        pytest.skip("Lightguide is not supported or installed")
     return request.param
 
 
@@ -405,10 +410,10 @@ class TestLightGuideBlast:
     """Tests for Blast Conversions."""
 
     @pytest.fixture(scope="class", autouse=True)
-    def skip_on_windows(self):
-        """Skip tests if on windows."""
-        if ON_WINDOWS:
-            pytest.skip("Lightguide doesn't support windows")
+    def skip_if_unsupported(self):
+        """Skip tests if lightguide is unsupported or unavailable."""
+        if not LIGHTGUIDE_SUPPORTED:
+            pytest.skip("Lightguide is not supported or installed")
 
     @pytest.fixture(scope="class")
     def lightguide_base_das(self, lightguide_blast):
@@ -504,8 +509,8 @@ class TestIntegrations:
 
     def test_readme_1(self):
         """First test for readme examples."""
-        if ON_WINDOWS:
-            pytest.skip("Lightguide doesn't support windows")
+        if not LIGHTGUIDE_SUPPORTED:
+            pytest.skip("Lightguide is not supported or installed")
         sec = daspy.read()
         blast = unidas.convert(sec, to="lightguide.Blast")
         blast.afk_filter(exponent=0.8)
