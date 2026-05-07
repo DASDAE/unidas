@@ -242,7 +242,7 @@ class EvenlySampledCoordinate(Coordinate):
 
     def to_xdas_coord(self):
         """Convert to an XDAS coordinate."""
-        xcoords = optional_import("xdas.core.coordinates")
+        xdas = optional_import("xdas")
         # Currently, xdas expects a number or numpy datatime, need to convert
         # python datetimes to numpy.
         tie_values = self.tie_values
@@ -251,7 +251,7 @@ class EvenlySampledCoordinate(Coordinate):
             tie_values = [np.datetime64(to_stripped_utc(x)) for x in tie_values]
         data = {"tie_indices": self.tie_indices, "tie_values": tie_values}
         dim = self.dims[0] if len(self.dims) == 1 else None
-        out = xcoords.InterpCoordinate(data=data, dim=dim)
+        out = xdas.InterpCoordinate(data=data, dim=dim)
         return out
 
     def __len__(self):
@@ -294,9 +294,9 @@ class ArrayCoordinate(Coordinate):
 
     def to_xdas_coord(self):
         """Convert to an XDAS coordinate."""
-        xcoords = optional_import("xdas.core.coordinates")
+        xdas = optional_import("xdas")
         dim = self.dims[0] if len(self.dims) == 1 else None
-        return xcoords.DenseCoordinate(data=self.data, dim=dim)
+        return xdas.DenseCoordinate(data=self.data, dim=dim)
 
     def get_step(self):
         """Return the coordinate step when it is evenly sampled."""
@@ -680,13 +680,13 @@ class XDASConverter(Converter):
 
     def _to_base_coords(self, data_array):
         """Convert the xdas coordinates to unidas coordinates."""
-        xcoords = optional_import("xdas.core.coordinates")
+        xdas = optional_import("xdas")
         coords = data_array.coords
         coords_out = {}
         for name, coord in coords.items():
             dims = (coord.dim,) if isinstance(coord.dim, str) else (name,)
             # It seems the InterpCoordinate is evenly sampled, monotonic.
-            if isinstance(coord, xcoords.InterpCoordinate):
+            if isinstance(coord, xdas.InterpCoordinate):
                 # Other libraries handle gaps differently. For now, we raise if
                 # there are any gaps, which I interpret as more than 2 tie values.
                 # Need to double check that this is right.
@@ -696,9 +696,7 @@ class XDASConverter(Converter):
                         "other formats"
                     )
                     raise NotImplementedError(msg)
-                step = xcoords.get_sampling_interval(
-                    da=data_array, dim=name, cast=False
-                )
+                step = xdas.get_sampling_interval(da=data_array, dim=name, cast=False)
                 ucoord = EvenlySampledCoordinate(
                     tie_values=coord.tie_values,
                     tie_indices=coord.tie_indices,
