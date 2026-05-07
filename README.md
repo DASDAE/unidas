@@ -61,7 +61,7 @@ sec_out = unidas.convert(blast, to='daspy.Section')
 ```
 
 ## Installation
-Unidas requires Python 3.12 or newer. Simply install unidas with pip or mamba:
+Unidas requires Python 3.11 or newer. Simply install unidas with pip or mamba:
 
 ```bash
 pip install unidas 
@@ -78,6 +78,10 @@ To install the supported DAS libraries with unidas:
 ```bash
 pip install "unidas[extras]"
 ```
+
+Some optional libraries lag new Python releases. The aggregate `unidas[extras]`
+install currently targets Python 3.11 and 3.12; on Python 3.13 and newer,
+install optional DAS libraries directly once they publish compatible wheels.
 
 For development and testing:
 
@@ -132,3 +136,7 @@ Feel free to open a discussion if you need help.
 ## Compatibility notes
 
 DASPy sections require `time` and `distance` coordinates, evenly sampled coordinates, and an absolute datetime time coordinate. DASCore or XDAS objects with relative, numeric, or uneven time/distance coordinates may still convert to other formats, but will raise a `ValueError` when converting to `daspy.Section`.
+
+## Making releases
+
+To publish a release, bump `__version__` in `src/unidas.py`, merge the change to `main`, create a version tag such as `v0.1.0`, then publish a GitHub Release from that tag. Publishing the GitHub Release triggers the PyPI upload workflow.

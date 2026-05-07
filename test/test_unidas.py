@@ -114,6 +114,24 @@ class TestMisc:
 
         assert out == 1
 
+    def test_time_to_datetime_truncates_numpy_nanoseconds(self):
+        """Ensure numpy nanosecond datetimes convert to UTC Python datetimes."""
+        time = np.datetime64("2020-01-01T00:00:00.123456789")
+
+        out = unidas.time_to_datetime(time)
+
+        expected = datetime.datetime(
+            2020,
+            1,
+            1,
+            0,
+            0,
+            0,
+            123456,
+            tzinfo=datetime.UTC,
+        )
+        assert out == expected
+
 
 class TestCoordinate:
     """Test suite for coordinate base behavior."""

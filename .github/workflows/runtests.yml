@@ -27,7 +27,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.12"]
+        python-version: ["3.11", "3.12"]
 
     # only run if CI isn't turned off
     if: github.event_name == 'push' || !contains(github.event.pull_request.labels.*.name, 'no_ci')
@@ -37,10 +37,10 @@ jobs:
       env_file: "environment.yml"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v8.1.0
 
       - name: run pytest
         run: uv run --all-extras --python ${{ matrix.python-version }} pytest -s --cov src --cov-append --cov-report=xml
@@ -50,7 +50,7 @@ jobs:
         run: uv run --all-extras --python ${{ matrix.python-version }} pytest src --doctest-modules
 
       # Upload coverage files
-      - uses: codecov/codecov-action@v5
+      - uses: codecov/codecov-action@v6.0.0
         with:
           fail_ci_if_error: false
           files: ./coverage.xml
@@ -72,10 +72,10 @@ jobs:
     if: github.event_name == 'push' || !contains(github.event.pull_request.labels.*.name, 'no_ci')
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v8.1.0
 
       - name: import package
         run: uv run --python ${{ matrix.python-version }} python -c "import unidas; assert isinstance(unidas.__version__, str)"

@@ -32,9 +32,6 @@ PROJECT_URLS = {
     "xdas": "https://github.com/xdas-dev/xdas",
 }
 
-# Datetime precision. This can change between python versions.
-DT_PRECISION = datetime.datetime.resolution.total_seconds()
-
 # A generic type variable.
 T = TypeVar("T")
 
@@ -127,19 +124,13 @@ def time_to_float(obj):
 def time_to_datetime(obj):
     """Convert a time-like object to a datetime object."""
     if isinstance(obj, np.datetime64):
-        if DT_PRECISION > 1e-9:
-            # On python 3.10 this can fail since the default time precision is
-            # for datetime.datetime is us not ns. Need to truncate to us precision.
-            # TODO: need to look into daspy's DASUTC to see if it can handle ns.
-            obj = obj.astype("datetime64[us]")
+        obj = obj.astype("datetime64[us]").item()
     elif isinstance(obj, np.timedelta64) or not isinstance(obj, datetime.datetime):
         msg = "DASPy conversion requires an absolute datetime time coordinate."
         raise ValueError(msg)
-    if not isinstance(obj, datetime.datetime):
-        # Lightguide expects a timezone to be attached, so we attach utc.
-        utc = zoneinfo.ZoneInfo("UTC")
-        obj = datetime.datetime.fromisoformat(str(obj))
-        obj = obj.replace(tzinfo=utc) if obj.tzinfo is None else obj.astimezone(utc)
+    # Lightguide expects a timezone to be attached, so attach UTC to naive values.
+    utc = zoneinfo.ZoneInfo("UTC")
+    obj = obj.replace(tzinfo=utc) if obj.tzinfo is None else obj.astimezone(utc)
     return obj
 
 
