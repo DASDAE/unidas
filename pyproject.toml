@@ -46,7 +46,7 @@ dependencies = [
 extras = [
     "dascore",
     "daspy-toolbox",
-    "lightguide",
+    "lightguide; platform_system != 'Windows'",
     "xdas",
     "numpy<2"  # This is due to pyrocko. Remove when it has a new release.
 ]
