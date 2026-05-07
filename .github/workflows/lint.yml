@@ -1,4 +1,4 @@
-# Lint the code using the defined pre-commits
+# Lint the code using the configured prek hooks
 name: LintCode
 on: [push]
 
@@ -20,7 +20,7 @@ jobs:
           python-version: '3.12'
 
       - name: install linting packages
-        run: uv tool install pre-commit
+        run: uv tool install prek
 
-      - name: run all precommits
-        run: uv tool run pre-commit run --all
+      - name: run all prek hooks
+        run: uv tool run prek run --all-files

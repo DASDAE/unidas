@@ -34,7 +34,7 @@ out = daspy_function(patch)
 assert isinstance(out, dc.Patch)
 ```
 
-You can also use `adpater` to wrap un-wrapped functions. 
+You can also use `adapter` to wrap un-wrapped functions. 
 
 ```python
 import dascore as dc
@@ -61,7 +61,7 @@ sec_out = unidas.convert(blast, to='daspy.Section')
 ```
 
 ## Installation
-Simply install unidas with pip or mamba:
+Unidas requires Python 3.12 or newer. Simply install unidas with pip or mamba:
 
 ```bash
 pip install unidas 
@@ -72,6 +72,18 @@ mamba install unidas
 ```
 
 By design, unidas has no hard dependencies other than numpy, but an `ImportError` will be raised if the libraries needed to perform a requested conversion are not installed.
+
+To install the supported DAS libraries with unidas:
+
+```bash
+pip install "unidas[extras]"
+```
+
+For development and testing:
+
+```bash
+pip install "unidas[dev]"
+```
 
 Unidas is single file (src/unidas.py) so it can also be vendored (copied directly into your project). If you do this, please consider sharing any improvements so the entire community can benefit. 
 
@@ -105,7 +117,7 @@ def fancy_machine_learning_function(sec):
 To add support for a new data structure/library, you need to do two things:
 
 1. Create a subclass of `Converter` which has (at least) a conversion method to unidas' BaseDAS.
-2. Add a conversion method to UnidasBasDASConverter to convert from unidas' BaseDAS back to your data structure.
+2. Add a conversion method to UnidasBaseDASConverter to convert from unidas' BaseDAS back to your data structure.
 3. Write a test in test/test_unidas.py (this is important for maintainability).
 
 Feel free to open a discussion if you need help. 
@@ -116,3 +128,7 @@ Feel free to open a discussion if you need help.
 - [DASPy](https://github.com/HMZ-03/DASPy)
 - [Lightguide](https://github.com/pyrocko/lightguide)
 - [Xdas](https://github.com/xdas-dev/xdas)
+
+## Compatibility notes
+
+DASPy sections require `time` and `distance` coordinates, evenly sampled coordinates, and an absolute datetime time coordinate. DASCore or XDAS objects with relative, numeric, or uneven time/distance coordinates may still convert to other formats, but will raise a `ValueError` when converting to `daspy.Section`.

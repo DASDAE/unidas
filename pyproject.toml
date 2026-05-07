@@ -2,18 +2,24 @@
 # --- Build system configuration
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/unidas.py"]
+[tool.setuptools]
+include-package-data = true
+py-modules = ["unidas"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.dynamic]
+version = {attr = "unidas.__version__"}
 
 # --- Project Metadata
 
 [project]
 name = "unidas"
-
-version = "0.0.1" # Make sure to bump dascore.__version__ as well!
+dynamic = ["version"]
 
 authors = [
   { name="Derrick Chambers", email="chambers.ja.derrick@gmail.com" },
@@ -21,7 +27,7 @@ authors = [
 
 description = "A DAS compatibility library"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 classifiers = [
     "License :: OSI Approved :: MIT License",
     "Topic :: Scientific/Engineering",
@@ -46,7 +52,7 @@ extras = [
 ]
 
 test = [
-    "pre-commit",
+    "prek",
     "pytest",
     "ruff",
     "pooch",
@@ -58,9 +64,9 @@ dev = ["unidas[test]", "unidas[extras]"]
 # --- URLs for project
 
 [project.urls]
-"Bug Tracker" = "https://github.com/unidas-dev/unidas"
-"Documentation" = "https://github.com/unidas-dev/unidas"
-"Homepage" = "https://github.com/unidas-dev/unidas"
+"Bug Tracker" = "https://github.com/dasdae/unidas/issues"
+"Documentation" = "https://github.com/dasdae/unidas"
+"Homepage" = "https://github.com/dasdae/unidas"
 
 # --- External tool configuration
 

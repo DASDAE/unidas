@@ -4,14 +4,6 @@ Unidas: A DAS Compatibility Package.
 
 from __future__ import annotations
 
-# Unidas version indicator. When incrementing, be sure to update
-# pyproject.toml as well.
-__version__ = "0.0.1"
-
-# Explicitly defines unidas' public API.
-# https://peps.python.org/pep-0008/#public-and-internal-interfaces
-__all__ = ("adapter", "convert")
-
 import datetime
 import importlib
 import inspect
@@ -24,6 +16,13 @@ from types import ModuleType
 from typing import Any, ClassVar, Protocol, TypeVar, runtime_checkable
 
 import numpy as np
+
+# Explicitly defines unidas' public API.
+__all__ = ("adapter", "convert")
+
+# Keep the version hardcoded so vendored copies report their own version
+# without requiring installed package metadata.
+__version__ = "0.1.0"
 
 # Define the urls to each project to provide helpful error messages.
 PROJECT_URLS = {
@@ -127,11 +126,15 @@ def time_to_float(obj):
 
 def time_to_datetime(obj):
     """Convert a time-like object to a datetime object."""
-    if isinstance(obj, np.datetime64) and DT_PRECISION > 1e-9:
-        # On python 3.10 this can fail since the default time precision is
-        # for datetime.datetime is us not ns. Need to truncate to us precision.
-        # TODO: need to look into daspy's DASUTC to see if it can handle ns.
-        obj = obj.astype("datetime64[us]")
+    if isinstance(obj, np.datetime64):
+        if DT_PRECISION > 1e-9:
+            # On python 3.10 this can fail since the default time precision is
+            # for datetime.datetime is us not ns. Need to truncate to us precision.
+            # TODO: need to look into daspy's DASUTC to see if it can handle ns.
+            obj = obj.astype("datetime64[us]")
+    elif isinstance(obj, np.timedelta64) or not isinstance(obj, datetime.datetime):
+        msg = "DASPy conversion requires an absolute datetime time coordinate."
+        raise ValueError(msg)
     if not isinstance(obj, datetime.datetime):
         # Lightguide expects a timezone to be attached, so we attach utc.
         utc = zoneinfo.ZoneInfo("UTC")
@@ -180,6 +183,14 @@ class Coordinate(ArrayLike):
 
     def to_xdas_coord(self):
         """Method to convert to xdas coordinate."""
+        raise NotImplementedError(f"Not implemented for {self.__class__}")
+
+    def get_step(self):
+        """Return the coordinate step when it is well-defined."""
+        raise NotImplementedError(f"Not implemented for {self.__class__}")
+
+    def get_start(self):
+        """Return the first coordinate value."""
         raise NotImplementedError(f"Not implemented for {self.__class__}")
 
 
@@ -239,11 +250,20 @@ class EvenlySampledCoordinate(Coordinate):
         if isinstance(self.tie_values[0], datetime.datetime):
             tie_values = [np.datetime64(to_stripped_utc(x)) for x in tie_values]
         data = {"tie_indices": self.tie_indices, "tie_values": tie_values}
-        out = xcoords.InterpCoordinate(data=data)
+        dim = self.dims[0] if len(self.dims) == 1 else None
+        out = xcoords.InterpCoordinate(data=data, dim=dim)
         return out
 
     def __len__(self):
         return self.tie_indices[-1] - self.tie_indices[0] + 1
+
+    def get_step(self):
+        """Return the coordinate step."""
+        return self.step
+
+    def get_start(self):
+        """Return the first coordinate value."""
+        return self.tie_values[0]
 
 
 @dataclass
@@ -270,7 +290,27 @@ class ArrayCoordinate(Coordinate):
     def to_dascore_coord(self):
         """Convert to a dascore coordinate."""
         dc_core = optional_import("dascore.core")
-        return dc_core.get_coord(**self.to_dict())
+        return dc_core.get_coord(data=self.data, units=self.units)
+
+    def to_xdas_coord(self):
+        """Convert to an XDAS coordinate."""
+        xcoords = optional_import("xdas.core.coordinates")
+        dim = self.dims[0] if len(self.dims) == 1 else None
+        return xcoords.DenseCoordinate(data=self.data, dim=dim)
+
+    def get_step(self):
+        """Return the coordinate step when it is evenly sampled."""
+        if len(self) == 1:
+            return 1
+        diff = np.diff(self.data)
+        if np.all(diff == diff[0]):
+            return diff[0]
+        msg = "Array coordinates must be evenly sampled to convert to DASPy."
+        raise ValueError(msg)
+
+    def get_start(self):
+        """Return the first coordinate value."""
+        return self.data[0]
 
     def __len__(self):
         return len(self.data)
@@ -473,13 +513,14 @@ class UnidasBaseDASConverter(Converter):
         daspy = optional_import("daspy")
         dasdt = daspy.DASDateTime
         out = base_das.transpose("time", "distance").to_dict(flavor="simple")
-        time, dist = out["coords"]["time"], out["coords"]["distance"]
-        start_time = time_to_datetime(time["tie_values"][0])
+        time_coord = base_das.coords["time"]
+        dist_coord = base_das.coords["distance"]
+        start_time = time_to_datetime(time_coord.get_start())
         section = daspy.Section(
-            data=base_das.data,
-            fs=1 / time_to_float(time["step"]),  # This is sampling rate in Hz
-            dx=dist["step"],
-            start_distance=dist["tie_values"][0],
+            data=out["data"].T,
+            fs=1 / time_to_float(time_coord.get_step()),
+            dx=dist_coord.get_step(),
+            start_distance=dist_coord.get_start(),
             start_time=dasdt.from_datetime(start_time),
             **out["attrs"],
         )
@@ -526,7 +567,7 @@ class DASCorePatchConverter(Converter):
                 step=coord.step,
             )
         else:
-            return ArrayCoordinate(array=coord.array, units=coord.units)
+            return ArrayCoordinate(data=coord.data, units=coord.units, dims=dims)
 
     @converts_to("unidas.BaseDAS")
     def to_base(self, patch) -> BaseDAS:
@@ -644,17 +685,17 @@ class XDASConverter(Converter):
         coords_out = {}
         for name, coord in coords.items():
             dims = (coord.dim,) if isinstance(coord.dim, str) else (name,)
-            # Other libraries handle gaps differently. For now, we raise if
-            # there are any gaps, which I interpret as more than 2 tie values.
-            # Need to double check that this is right.
-            if len(coord.tie_values) > 2:
-                msg = (
-                    "Tie values of xdas coordinates imply gaps, cant convert to "
-                    "other formats"
-                )
-                raise NotImplementedError(msg)
             # It seems the InterpCoordinate is evenly sampled, monotonic.
             if isinstance(coord, xcoords.InterpCoordinate):
+                # Other libraries handle gaps differently. For now, we raise if
+                # there are any gaps, which I interpret as more than 2 tie values.
+                # Need to double check that this is right.
+                if len(coord.tie_values) > 2:
+                    msg = (
+                        "Tie values of xdas coordinates imply gaps, cant convert to "
+                        "other formats"
+                    )
+                    raise NotImplementedError(msg)
                 step = xcoords.get_sampling_interval(
                     da=data_array, dim=name, cast=False
                 )
