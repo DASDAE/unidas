@@ -18,7 +18,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Runs the tests on combinations of the supported python/os matrix.
+  # Runs the full optional-dependency integration suite on the supported
+  # Python/OS matrix.
   test_code:
 
     timeout-minutes: 25
@@ -26,7 +27,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ['3.10', '3.11', "3.12"]
+        python-version: ["3.11", "3.12"]
 
     # only run if CI isn't turned off
     if: github.event_name == 'push' || !contains(github.event.pull_request.labels.*.name, 'no_ci')
@@ -36,10 +37,10 @@ jobs:
       env_file: "environment.yml"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v8.1.0
 
       - name: run pytest
         run: uv run --all-extras --python ${{ matrix.python-version }} pytest -s --cov src --cov-append --cov-report=xml
@@ -49,13 +50,35 @@ jobs:
         run: uv run --all-extras --python ${{ matrix.python-version }} pytest src --doctest-modules
 
       # Upload coverage files
-      - uses: codecov/codecov-action@v5
+      - uses: codecov/codecov-action@v6.0.0
         with:
           fail_ci_if_error: false
           files: ./coverage.xml
           flags: unittests
           name: PR_tests
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  # Optional native dependencies lag new Python releases, so keep the broader
+  # Python matrix to a package import smoke test.
+  test_core_python:
+
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.13", "3.14"]
+
+    # only run if CI isn't turned off
+    if: github.event_name == 'push' || !contains(github.event.pull_request.labels.*.name, 'no_ci')
+
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+
+      - name: import package
+        run: uv run --python ${{ matrix.python-version }} python -c "import unidas; assert isinstance(unidas.__version__, str)"
 
 
 # This is a very useful step for debugging, it allows you to ssh into the CI

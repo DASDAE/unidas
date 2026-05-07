@@ -1,24 +1,24 @@
-# Upload to PyPI when new code lands in main.
-name: PublishPackage
+# Upload to PyPI when a GitHub release is published.
+name: ReleasePackage
 on:
-  push:
-    branches:
-    - main
+  release:
+    types: [published]
 
 jobs:
-  upload:
+  release:
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
+      contents: write
       # This must be enabled for trusted publishing.
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v8.1.0
 
-      - name: build and publish
+      - name: Build and publish
         shell: bash -l {0}
         run: |
           uv build
