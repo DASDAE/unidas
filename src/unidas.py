@@ -138,7 +138,8 @@ def time_to_datetime(obj):
     if not isinstance(obj, datetime.datetime):
         # Lightguide expects a timezone to be attached, so we attach utc.
         utc = zoneinfo.ZoneInfo("UTC")
-        obj = datetime.datetime.fromisoformat(str(obj)).astimezone(utc)
+        obj = datetime.datetime.fromisoformat(str(obj))
+        obj = obj.replace(tzinfo=utc) if obj.tzinfo is None else obj.astimezone(utc)
     return obj
 
 
