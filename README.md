@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/dasdae/unidas/main/static/logo.png" alt="unidas logo" width="360">
+</p>
+
 # unidas
 
 [![coverage](https://codecov.io/gh/dasdae/unidas/branch/main/graph/badge.svg)](https://codecov.io/gh/dasdae/unidas)
