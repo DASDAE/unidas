@@ -1,8 +1,7 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/dasdae/unidas/main/static/logo.png" alt="unidas logo" width="360">
+  <img src="https://raw.githubusercontent.com/dasdae/unidas/main/static/logo.png" alt="unidas logo">
 </p>
 
-# unidas
 
 [![coverage](https://codecov.io/gh/dasdae/unidas/branch/main/graph/badge.svg)](https://codecov.io/gh/dasdae/unidas)
 [![PyPI Version](https://img.shields.io/pypi/v/unidas.svg)](https://pypi.python.org/pypi/unidas)
