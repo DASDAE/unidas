@@ -22,7 +22,7 @@ __all__ = ("adapter", "convert")
 
 # Keep the version hardcoded so vendored copies report their own version
 # without requiring installed package metadata.
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 # Define the urls to each project to provide helpful error messages.
 PROJECT_URLS = {
@@ -549,6 +549,11 @@ class DASCorePatchConverter(Converter):
     """
 
     name = "dascore.Patch"
+    # PatchAttrs fields which describe the patch's coordinates rather than its
+    # acquisition. BaseDAS keeps that information in its own coords and dims,
+    # and this copy goes stale as soon as anything changes the extent of an
+    # axis, so it must not be dumped into the attrs dict.
+    _structural_attrs = frozenset({"coords", "dims"})
 
     def _to_base_coords(self, coord, dims):
         """Convert a coordinate to base coordinates."""
@@ -577,7 +582,7 @@ class DASCorePatchConverter(Converter):
             "data": patch.data,
             "dims": patch.dims,
             "coords": base_coords,
-            "attrs": patch.attrs.model_dump(),
+            "attrs": patch.attrs.model_dump(exclude=self._structural_attrs),
         }
         return BaseDAS(**out)
 
@@ -710,7 +715,7 @@ class XDASConverter(Converter):
     @converts_to("unidas.BaseDAS")
     def to_base(self, data_array) -> BaseDAS:
         """Convert dascore patch to base representation."""
-        attrs = {} if data_array.attrs is None else data_array.attrs
+        attrs = {} if data_array.attrs is None else dict(data_array.attrs)
         out = BaseDAS(
             data=data_array.data,
             dims=data_array.dims,

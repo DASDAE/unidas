@@ -212,6 +212,11 @@ class TestDASCorePatch:
         assert isinstance(out, dc.Patch)
         assert out == dascore_patch
 
+    def test_base_das_attrs_exclude_coord_description(self, dascore_base_das):
+        """Ensure the patch's coordinate description stays out of attrs."""
+        assert "coords" not in dascore_base_das.attrs
+        assert "dims" not in dascore_base_das.attrs
+
     def test_to_xdas_time_coord(self, dascore_patch):
         """
         Ensure we can convert to xdas DataArray and the time coords are equal.
@@ -412,6 +417,17 @@ class TestXdasDataArray:
         assert attr1 == attr2 or (not attr1 and not attr2)
         assert out.dims == xdas_dataarray.dims
 
+    def test_sliced_data_array_to_dascore(self, dascore_patch):
+        """Ensure a sliced DataArray keeps its own coordinates coming back."""
+        data_array = convert(dascore_patch, to="xdas.DataArray")
+        sliced = data_array.isel(time=slice(0, 10))
+
+        out = convert(sliced, to="dascore.Patch")
+
+        expected = sliced.coords["time"].values
+        assert np.all(out.get_array("time") == expected)
+        assert np.all(out.data == np.asarray(sliced.data))
+
     def test_dense_coordinate_to_base_das(self):
         """Ensure XDAS dense coordinates convert to array coordinates."""
         xdas = optional_import("xdas")
@@ -573,6 +589,20 @@ class TestIntegrations:
             coord_1 = dascore_patch.get_array(dim)
             coord_2 = patch_hilberto.get_array(dim)
             assert np.all(coord_1 == coord_2)
+
+    def test_adapter_with_coordinate_changing_function(self, dascore_patch):
+        """Ensure the output carries the coordinates the function produced."""
+
+        @adapter("xdas.DataArray")
+        def first_ten_samples(data_array):
+            """Trim the data array along the time axis."""
+            return data_array.isel(time=slice(0, 10))
+
+        out = first_ten_samples(dascore_patch)
+
+        assert isinstance(out, dc.Patch)
+        expected = dascore_patch.get_array("time")[:10]
+        assert np.all(out.get_array("time") == expected)
 
     def test_readme_3(self, dascore_patch):
         """The third tests for readme code."""
