@@ -241,8 +241,12 @@ class EvenlySampledCoordinate(Coordinate):
         # Tie values currently have to be either datetimes or floats
         if isinstance(self.tie_values[0], datetime.datetime):
             tie_values = [np.datetime64(to_stripped_utc(x)) for x in tie_values]
-        data = {"tie_indices": self.tie_indices, "tie_values": tie_values}
         dim = self.dims[0] if len(self.dims) == 1 else None
+        # xdas requires strictly increasing tie indices, which an axis holding a
+        # single sample cannot provide, so it is represented as a dense one.
+        if len(self) == 1:
+            return xdas.DenseCoordinate(data=np.atleast_1d(tie_values[0]), dim=dim)
+        data = {"tie_indices": self.tie_indices, "tie_values": tie_values}
         out = xdas.InterpCoordinate(data=data, dim=dim)
         return out
 

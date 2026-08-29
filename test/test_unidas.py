@@ -150,6 +150,23 @@ class TestCoordinate:
         with pytest.raises(NotImplementedError, match=msg):
             coord.get_start()
 
+    def test_single_sample_coordinate_to_xdas(self):
+        """
+        An axis with one sample has no increasing tie indices to give xdas, so
+        it converts to a dense coordinate instead of an interpolated one.
+        """
+        coord = unidas.EvenlySampledCoordinate(
+            tie_values=(10.0, 10.0),
+            tie_indices=(0, 0),
+            step=1.0,
+            dims=("distance",),
+        )
+
+        out = coord.to_xdas_coord()
+
+        assert len(out) == 1
+        assert np.all(np.asarray(out) == [10.0])
+
     def test_evenly_sampled_coordinate_with_gaps_to_dascore_raises(self):
         """Ensure gapped coordinates cannot convert to DASCore."""
         coord = unidas.EvenlySampledCoordinate(
@@ -293,7 +310,10 @@ class TestDASCorePatch:
 
     def test_single_distance_patch_to_daspy_section(self):
         """Ensure singleton distance coordinates default to dx=1."""
-        time = dc.to_datetime64("2020-01-01") + dc.to_timedelta64(np.arange(10))
+        # np.arange defaults to int32 on Windows, which overflows once the
+        # seconds are scaled to nanoseconds, giving an uneven time axis.
+        seconds = np.arange(10, dtype=np.int64)
+        time = dc.to_datetime64("2020-01-01") + dc.to_timedelta64(seconds)
         patch = dc.Patch(
             data=np.zeros((1, 10)),
             coords={"distance": [0], "time": time},
@@ -308,7 +328,10 @@ class TestDASCorePatch:
 
     def test_array_coordinates_to_daspy_section(self):
         """Ensure evenly sampled array coordinates can convert to DASPy."""
-        time = dc.to_datetime64("2020-01-01") + dc.to_timedelta64(np.arange(4))
+        # np.arange defaults to int32 on Windows, which overflows once the
+        # seconds are scaled to nanoseconds, giving an uneven time axis.
+        seconds = np.arange(4, dtype=np.int64)
+        time = dc.to_datetime64("2020-01-01") + dc.to_timedelta64(seconds)
         distance = np.arange(3) * 2
         base_das = BaseDAS(
             data=np.zeros((3, 4)),
