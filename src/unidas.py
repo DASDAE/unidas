@@ -22,7 +22,7 @@ __all__ = ("adapter", "convert")
 
 # Keep the version hardcoded so vendored copies report their own version
 # without requiring installed package metadata.
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 # Define the urls to each project to provide helpful error messages.
 PROJECT_URLS = {
