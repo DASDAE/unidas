@@ -1,0 +1,28 @@
+# Ensure each pull request raises the version, so one version string never
+# refers to two different states of the code.
+name: CheckVersion
+on:
+  pull_request:
+    branches:
+    - main
+
+jobs:
+  check_version:
+    runs-on: ubuntu-latest
+
+    # only run if CI isn't turned off
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'no_ci') }}
+
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+
+      - name: fetch base branch
+        run: git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+
+      - name: check the version was raised
+        run: >
+          uv run --no-project --with packaging
+          python .github/scripts/check_version.py "origin/${{ github.base_ref }}"
