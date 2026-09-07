@@ -174,11 +174,14 @@ def test_sampled_target_errors(xarray_dataarray, target, case):
 
 @pytest.mark.parametrize("target", ["daspy.Section", "lightguide.Blast"])
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
-def test_sampled_targets_float_spacing_and_transpose(xarray_dataarray, target, dtype):
+@pytest.mark.parametrize("count", [10, 100, 1000])
+def test_sampled_targets_float_spacing_and_transpose(
+    xarray_dataarray, target, dtype, count
+):
     """Floating-point spacing and reversed axis order convert correctly."""
     pytest.importorskip(target.split(".")[0])
     array = xarray_dataarray.reindex(
-        distance=np.arange(10, dtype=dtype) * dtype(0.1), fill_value=0
+        distance=np.arange(count, dtype=dtype) * dtype(0.1), fill_value=0
     )
     out = convert(array.transpose(), target)
     np.testing.assert_array_equal(out.data, array.data)
@@ -388,3 +391,77 @@ def test_lightguide_rounds_channel_offset(xarray_dataarray):
     assert blast.start_channel == 0
     out = convert(blast, "xarray.DataArray")
     np.testing.assert_allclose(out.distance, [0, 0.1, 0.2])
+
+
+@pytest.mark.parametrize(("count", "span"), [(2, 10), (4, 10), (4, 12)])
+def test_xdas_interpolation_preserves_labels(count, span):
+    """Short and rounded datetime interpolation retains native labels exactly."""
+    xdas = pytest.importorskip("xdas")
+    ties = np.datetime64("2020-01-01", "ns") + np.array(
+        [0, span], dtype="timedelta64[ns]"
+    )
+    array = xdas.DataArray(
+        np.arange(count),
+        dims=("time",),
+        coords={"time": {"tie_indices": [0, count - 1], "tie_values": ties}},
+    )
+    out = convert(array, "xarray.DataArray")
+    np.testing.assert_array_equal(out.time.values, array.coords["time"].values)
+    np.testing.assert_array_equal(out.data, array.data)
+
+
+@pytest.mark.parametrize("target", ["daspy.Section", "lightguide.Blast"])
+def test_sampled_targets_reject_swapped_associations(target):
+    """Coordinate names cannot override their actual dimension associations."""
+    pytest.importorskip(target.split(".")[0])
+    array = xr.DataArray(
+        np.zeros((2, 3)),
+        dims=("distance", "time"),
+        coords={
+            "time": (
+                "distance",
+                np.datetime64("2020-01-01", "ns")
+                + np.arange(2) * np.timedelta64(1, "s"),
+            ),
+            "distance": ("time", [0, 1, 2]),
+        },
+    )
+    with pytest.raises(ValueError, match="time.*associated with dimension 'time'"):
+        convert(array, target)
+
+
+@pytest.mark.parametrize(
+    ("values", "step"),
+    [
+        (np.array([2, 1, 0], dtype="uint64"), -1),
+        (np.array([-128, 0], dtype="int8"), 128),
+    ],
+)
+def test_integer_spacing_does_not_overflow(values, step):
+    """Coordinate differences retain their mathematical value across dtypes."""
+    assert ArrayCoordinate(values).get_step() == step
+
+
+@pytest.mark.parametrize("target", ["daspy.Section", "lightguide.Blast"])
+def test_sampled_targets_integer_spacing(xarray_dataarray, target):
+    """Narrow integer coordinates do not become negative sampling intervals."""
+    pytest.importorskip(target.split(".")[0])
+    array = xarray_dataarray.isel(distance=slice(0, 2)).assign_coords(
+        distance=np.array([-128, 0], dtype="int8")
+    )
+    out = convert(array, target)
+    step = out.dx if target == "daspy.Section" else out.channel_spacing
+    assert step == 128
+
+
+def test_float32_jitter_is_not_rounding():
+    """A coordinate perturbation larger than storage rounding stays irregular."""
+    values = np.arange(100, dtype=np.float32) * np.float32(0.1)
+    values[50] += 0.001
+    with pytest.raises(ValueError, match="evenly sampled"):
+        ArrayCoordinate(values).get_step()
+
+
+def test_scalar_coordinate_named_like_dimension():
+    """A scalar coordinate may share a dimension name without labeling its axis."""
+    assert_round_trip(xr.DataArray([1, 2], dims="x", coords={"x": 3.0}))

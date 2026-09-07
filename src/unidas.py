@@ -358,16 +358,23 @@ class ArrayCoordinate(Coordinate):
             raise ValueError("Sampling requires finite coordinate values.")
         if len(self) == 1:
             return 1
-        diff = np.diff(data)
         if data.dtype.kind == "f":
-            # Allow float32 rounding too, but scale tolerance to the sampling
-            # step so a large coordinate offset cannot hide uneven sampling.
-            tolerance = max(1e-7, 8 * np.finfo(data.dtype).eps)
-            regular = np.allclose(diff, diff[0], rtol=tolerance, atol=0)
+            # Fit the endpoints in at least double precision, then compare the
+            # grid to the labels at their stored precision. Differencing alone
+            # amplifies float32 rounding as the coordinate magnitude increases.
+            values = data.astype(np.result_type(data.dtype, np.float64), copy=False)
+            step = (values[-1] - values[0]) / (len(data) - 1)
+            expected = values[0] + np.arange(len(data)) * step
+            tolerance = 2 * np.abs(np.spacing(data))
+            regular = np.all(np.abs(values - expected) <= tolerance)
+            if regular and np.isfinite(step):
+                return step
         else:
-            regular = np.all(diff == diff[0])
-        if regular and np.all(np.isfinite(diff)):
-            return diff[0]
+            # Avoid wraparound when differencing unsigned or narrow integers.
+            integer = data.dtype.kind in "iu"
+            diff = np.diff(data.astype(object) if integer else data)
+            if np.all(diff == diff[0]) and (integer or np.all(np.isfinite(diff))):
+                return diff[0]
         msg = "Array coordinates must be evenly sampled."
         raise ValueError(msg)
 
@@ -403,10 +410,14 @@ class BaseDAS:
         assert len(self.dims) == len(self.data.shape)
         sizes = dict(zip(self.dims, self.data.shape, strict=True))
         for name, coord in self.coords.items():
-            dims = coord.dims or ((name,) if name in sizes else ())
+            dims = self._get_coord_dims(name, coord)
             assert all(dim in sizes for dim in dims)
             if dims:
                 assert coord.shape == tuple(sizes[dim] for dim in dims)
+
+    def _get_coord_dims(self, name, coord):
+        """Infer legacy array associations without reassigning scalar coordinates."""
+        return coord.dims or ((name,) if name in self.dims and coord.shape else ())
 
     def _coord_to_dict(self, flavor):
         """Convert the coordinates to a dictionary."""
@@ -419,7 +430,7 @@ class BaseDAS:
                     f"{flavor} cannot represent coordinate {name!r}: {exc}"
                 ) from exc
             if flavor == "dascore":
-                dims = coord.dims or ((name,) if name in self.dims else ())
+                dims = self._get_coord_dims(name, coord)
                 out[name] = (dims, converted)
             else:
                 out[name] = converted
@@ -469,6 +480,10 @@ class BaseDAS:
                 raise ValueError(f"{target} requires a {name!r} coordinate.")
             coord = self.coords[name]
             try:
+                if self._get_coord_dims(name, coord) != (name,):
+                    raise ValueError(
+                        f"Coordinate must be associated with dimension {name!r}."
+                    )
                 start, step = coord.get_start(), coord.get_step()
                 if time_to_float(step) == 0:
                     raise ValueError("Sampling step must be nonzero.")
@@ -800,8 +815,7 @@ class XDASConverter(Converter):
         coords_out = {}
         for name, coord in coords.items():
             dims = (coord.dim,) if coord.dim is not None else ()
-            # It seems the InterpCoordinate is evenly sampled, monotonic.
-            if isinstance(coord, xdas.InterpCoordinate):
+            if isinstance(coord, xdas.InterpCoordinate) and len(coord.tie_values) > 1:
                 # Other libraries handle gaps differently. For now, we raise if
                 # there are any gaps, which I interpret as more than 2 tie values.
                 # Need to double check that this is right.
@@ -811,13 +825,23 @@ class XDASConverter(Converter):
                         "other formats"
                     )
                     raise NotImplementedError(msg)
-                step = xdas.get_sampling_interval(da=data_array, dim=name, cast=False)
-                ucoord = EvenlySampledCoordinate(
-                    tie_values=coord.tie_values,
-                    tie_indices=coord.tie_indices,
-                    step=step,
-                    dims=dims,
-                )
+                values = coord.tie_values
+                time_like = values.dtype.kind in "mM"
+                if not time_like:
+                    values = values.astype(float)
+                span = int(coord.tie_indices[-1] - coord.tie_indices[0])
+                delta = values[-1] - values[0]
+                step = delta / span
+                # Rounded datetime labels need their native dense values.
+                if time_like and step * span != delta:
+                    ucoord = ArrayCoordinate(data=coord.values, dims=dims)
+                else:
+                    ucoord = EvenlySampledCoordinate(
+                        tie_values=coord.tie_values,
+                        tie_indices=coord.tie_indices,
+                        step=step,
+                        dims=dims,
+                    )
             else:
                 ucoord = ArrayCoordinate(
                     data=coord.values,
