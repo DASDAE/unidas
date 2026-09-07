@@ -63,6 +63,22 @@ blast.afk_filter(exponent=0.8)
 sec_out = unidas.convert(blast, to='daspy.Section')
 ```
 
+Xarray DataArrays work with both APIs:
+
+```python
+import dascore as dc
+import unidas
+
+patch = dc.get_example_patch()
+data_array = unidas.convert(patch, to="xarray.DataArray")
+
+@unidas.adapter("xarray.DataArray")
+def first_ten_samples(data_array):
+    return data_array.isel(time=slice(0, 10))
+
+trimmed_patch = first_ten_samples(patch)
+```
+
 ## Installation
 Unidas requires Python 3.11 or newer. Simply install unidas with pip or mamba:
 
@@ -82,9 +98,7 @@ To install the supported DAS libraries with unidas:
 pip install "unidas[extras]"
 ```
 
-Some optional libraries lag new Python releases. The aggregate `unidas[extras]`
-install currently targets Python 3.11 and 3.12; on Python 3.13 and newer,
-install optional DAS libraries directly once they publish compatible wheels.
+Some optional libraries lag new Python releases. The complete `unidas[extras]` set currently targets Python 3.11 and 3.12. On Python 3.13 and newer, the extra installs xarray; install the other optional DAS libraries directly once they publish compatible wheels. Xarray can also be installed separately with `pip install xarray`.
 
 For development and testing:
 
@@ -134,11 +148,18 @@ Feel free to open a discussion if you need help.
 - [DASCore](https://github.com/DASDAE/dascore)
 - [DASPy](https://github.com/HMZ-03/DASPy)
 - [Lightguide](https://github.com/pyrocko/lightguide)
+- [Xarray](https://docs.xarray.dev/) (`DataArray` only)
 - [Xdas](https://github.com/xdas-dev/xdas)
 
 ## Compatibility notes
 
-DASPy sections require `time` and `distance` coordinates, evenly sampled coordinates, and an absolute datetime time coordinate. DASCore or XDAS objects with relative, numeric, or uneven time/distance coordinates may still convert to other formats, but will raise a `ValueError` when converting to `daspy.Section`.
+DASPy sections and Lightguide blasts require `time` and `distance` coordinates, evenly sampled coordinates, and an absolute datetime time coordinate. Objects with relative, numeric, or uneven time/distance coordinates may still convert to other formats, but will raise a `ValueError` when converting to `daspy.Section` or `lightguide.Blast`.
+
+Xarray conversion through unidas' internal representation preserves the array name, data, dimension order, coordinates (including scalar and multidimensional auxiliary coordinates), attributes, and coordinate metadata such as units. On this internal round-trip, dimensions without coordinate labels remain unlabeled. DASCore may replace missing labels with placeholder coordinates. Other formats retain only the structures and metadata they support; unsupported coordinate layouts raise an error identifying the target and coordinate. For example, XDAS supports scalar coordinates but does not support multidimensional coordinates. Some DASCore versions cannot construct scalar or multidimensional coordinates. DASCore coordinate units become portable strings in xarray attributes.
+
+DASPy sampling fields are derived from coordinates and take precedence over conflicting attributes such as `fs` or `dx`. Lightguide represents distance using integer channel indices and rounds the starting distance to the nearest channel when it is not an integer multiple of the spacing.
+
+Xarray `Dataset` objects, storage encoding, and reconstruction of custom indexes are not supported. Data is not explicitly computed on the xarray–internal representation path, but other libraries may require eager arrays.
 
 ## Making releases
 

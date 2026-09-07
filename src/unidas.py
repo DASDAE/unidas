@@ -10,7 +10,7 @@ import inspect
 import zoneinfo
 from collections import defaultdict, deque
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cache, wraps
 from types import ModuleType
 from typing import Any, ClassVar, Protocol, TypeVar, runtime_checkable
@@ -22,13 +22,14 @@ __all__ = ("adapter", "convert")
 
 # Keep the version hardcoded so vendored copies report their own version
 # without requiring installed package metadata.
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 # Define the urls to each project to provide helpful error messages.
 PROJECT_URLS = {
     "dascore": "https://github.com/dasdae/dascore",
     "daspy": "https://github.com/HMZ-03/DASPy",
     "lightguide": "https://github.com/pyrocko/lightguide",
+    "xarray": "https://docs.xarray.dev/en/stable/getting-started-guide/installing.html",
     "xdas": "https://github.com/xdas-dev/xdas",
 }
 
@@ -160,14 +161,14 @@ class ArrayLike(Protocol):
 class Coordinate(ArrayLike):
     """Base class for representing coordinates."""
 
-    def to_dict(self, flavor=None):
+    def to_dict(self, flavor):
+        """Serialize a coordinate for the requested destination."""
         if flavor == "dascore":
-            out = self.to_dascore_coord()
-        elif flavor == "xdas":
-            out = self.to_xdas_coord()
-        else:
-            out = self.__dict__
-        return out
+            return self.to_dascore_coord()
+        if flavor == "xdas":
+            return self.to_xdas_coord()
+        assert flavor == "xarray", f"Unknown coordinate flavor: {flavor}"
+        return self.to_xarray_coord()
 
     def to_dascore_coord(self):
         """Method to convert to DAScore coordinates."""
@@ -175,6 +176,18 @@ class Coordinate(ArrayLike):
 
     def to_xdas_coord(self):
         """Method to convert to xdas coordinate."""
+        raise NotImplementedError(f"Not implemented for {self.__class__}")
+
+    def to_xarray_coord(self):
+        """Convert to an xarray coordinate variable."""
+        xr = optional_import("xarray")
+        attrs = dict(self.attrs)
+        if self.units is not None:
+            attrs["units"] = self.units
+        return xr.Variable(self.dims, self.get_array(), attrs=attrs)
+
+    def get_array(self):
+        """Return the coordinate values as an array."""
         raise NotImplementedError(f"Not implemented for {self.__class__}")
 
     def get_step(self):
@@ -203,13 +216,39 @@ class EvenlySampledCoordinate(Coordinate):
         The units of the coordinate.
     dims
         The dimensions with which the coordinate is associated.
+    attrs
+        Coordinate metadata other than units.
     """
 
     step: Any
     tie_values: Sequence
     tie_indices: Sequence[int]
     units: Any = None
-    dims: tuple[str] = ()
+    dims: tuple[str, ...] = ()
+    attrs: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def shape(self):
+        """Return the coordinate shape without expanding its values."""
+        return (len(self),)
+
+    def get_array(self):
+        """Expand sampled coordinates, keeping datetime arithmetic exact."""
+        if len(self.tie_values) > 2:
+            raise NotImplementedError("Cannot expand coordinates with gaps.")
+        start, step = self.get_start(), self.step
+        if isinstance(start, datetime.datetime):
+            start = np.datetime64(to_stripped_utc(time_to_datetime(start)))
+        if len(self) == 1:
+            return np.asarray([start])
+        if isinstance(start, np.datetime64 | np.timedelta64) and not isinstance(
+            step, np.timedelta64
+        ):
+            seconds = (
+                step.total_seconds() if isinstance(step, datetime.timedelta) else step
+            )
+            step = np.timedelta64(round(seconds * 1_000_000_000), "ns")
+        return start + np.arange(len(self), dtype=np.int64) * step
 
     def to_dascore_coord(self):
         """Convert to a dascore coordinate."""
@@ -265,9 +304,9 @@ class EvenlySampledCoordinate(Coordinate):
 @dataclass
 class ArrayCoordinate(Coordinate):
     """
-    A coordinate which is not evenly sampled and contiguous.
+    A coordinate represented by an explicit array of values.
 
-    The coordinate is represented by a generic array.
+    The array may contain scalar, one-dimensional, or multidimensional values.
 
     Parameters
     ----------
@@ -277,11 +316,23 @@ class ArrayCoordinate(Coordinate):
         The units of the coordinate.
     dims
         The dimensions with which the coordinate is associated.
+    attrs
+        Coordinate metadata other than units.
     """
 
     data: ArrayLike
     units: Any = None
-    dims: tuple[str] = ()
+    dims: tuple[str, ...] = ()
+    attrs: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def shape(self):
+        """Return the coordinate shape."""
+        return np.shape(self.data)
+
+    def get_array(self):
+        """Return the coordinate values without copying or computing them."""
+        return self.data
 
     def to_dascore_coord(self):
         """Convert to a dascore coordinate."""
@@ -291,21 +342,39 @@ class ArrayCoordinate(Coordinate):
     def to_xdas_coord(self):
         """Convert to an XDAS coordinate."""
         xdas = optional_import("xdas")
+        if len(self.shape) > 1:
+            raise ValueError("XDAS does not support multidimensional coordinates.")
+        if not self.shape:
+            return xdas.ScalarCoordinate(data=self.data)
         dim = self.dims[0] if len(self.dims) == 1 else None
         return xdas.DenseCoordinate(data=self.data, dim=dim)
 
     def get_step(self):
         """Return the coordinate step when it is evenly sampled."""
+        data = np.asarray(self.data)
+        if data.ndim != 1 or not data.size or data.dtype.kind not in "iufmM":
+            raise ValueError("Sampling requires a nonempty numeric or time axis.")
+        if not np.all(np.isfinite(data)):
+            raise ValueError("Sampling requires finite coordinate values.")
         if len(self) == 1:
             return 1
-        diff = np.diff(self.data)
-        if np.all(diff == diff[0]):
+        diff = np.diff(data)
+        if data.dtype.kind == "f":
+            # Allow float32 rounding too, but scale tolerance to the sampling
+            # step so a large coordinate offset cannot hide uneven sampling.
+            tolerance = max(1e-7, 8 * np.finfo(data.dtype).eps)
+            regular = np.allclose(diff, diff[0], rtol=tolerance, atol=0)
+        else:
+            regular = np.all(diff == diff[0])
+        if regular and np.all(np.isfinite(diff)):
             return diff[0]
-        msg = "Array coordinates must be evenly sampled to convert to DASPy."
+        msg = "Array coordinates must be evenly sampled."
         raise ValueError(msg)
 
     def get_start(self):
         """Return the first coordinate value."""
+        if len(self.shape) != 1 or not self.shape[0]:
+            raise ValueError("Sampling requires a nonempty one-dimensional axis.")
         return self.data[0]
 
     def __len__(self):
@@ -325,30 +394,38 @@ class BaseDAS:
     coords: dict[str, Coordinate]
     attrs: dict[str, Any]
     dims: tuple[str, ...]
+    name: Any = None
 
     def validate(self):
         """Run simple validation checks on BaseDAS."""
-        # First ensure shapes are consistent with coordinates.
-        for num, name in enumerate(self.dims):
-            data_len = self.data.shape[num]
-            coord_len = len(self.coords[name])
-            assert data_len == coord_len
-        # Ensure attrs and coords are mappings
         assert isinstance(self.attrs, Mapping)
         assert isinstance(self.coords, Mapping)
+        assert len(self.dims) == len(self.data.shape)
+        sizes = dict(zip(self.dims, self.data.shape, strict=True))
+        for name, coord in self.coords.items():
+            dims = coord.dims or ((name,) if name in sizes else ())
+            assert all(dim in sizes for dim in dims)
+            if dims:
+                assert coord.shape == tuple(sizes[dim] for dim in dims)
 
-    def _coord_to_dict(self, flavor=None):
+    def _coord_to_dict(self, flavor):
         """Convert the coordinates to a dictionary."""
         out = {}
         for name, coord in self.coords.items():
+            try:
+                converted = coord.to_dict(flavor=flavor)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"{flavor} cannot represent coordinate {name!r}: {exc}"
+                ) from exc
             if flavor == "dascore":
-                dims = (name,) if not coord.dims else coord.dims
-                out[name] = (dims, coord.to_dict(flavor=flavor))
-            elif flavor in {"xdas", "simple", None}:
-                out[name] = coord.to_dict(flavor=flavor)
+                dims = coord.dims or ((name,) if name in self.dims else ())
+                out[name] = (dims, converted)
+            else:
+                out[name] = converted
         return out
 
-    def to_dict(self, flavor: str | None = None):
+    def to_dict(self, flavor: str):
         """
         Convert base das to dict.
 
@@ -358,6 +435,8 @@ class BaseDAS:
             The target for the output.
         """
         out = dict(self.__dict__)
+        if flavor == "dascore":
+            out.pop("name")
         out["coords"] = self._coord_to_dict(flavor=flavor)
         return out
 
@@ -372,7 +451,33 @@ class BaseDAS:
         """
         axes = tuple(self.dims.index(x) for x in dims)
         new_data = self.data.transpose(axes)
-        return BaseDAS(data=new_data, coords=self.coords, attrs=self.attrs, dims=dims)
+        return BaseDAS(
+            data=new_data,
+            coords=self.coords,
+            attrs=self.attrs,
+            dims=dims,
+            name=self.name,
+        )
+
+    def get_sampling(self, target):
+        """Get sampled time and distance axes required by DASPy and Lightguide."""
+        if len(self.dims) != 2 or set(self.dims) != {"time", "distance"}:
+            raise ValueError(f"{target} requires time and distance dimensions.")
+        out = {}
+        for name in ("time", "distance"):
+            if name not in self.coords:
+                raise ValueError(f"{target} requires a {name!r} coordinate.")
+            coord = self.coords[name]
+            try:
+                start, step = coord.get_start(), coord.get_step()
+                if time_to_float(step) == 0:
+                    raise ValueError("Sampling step must be nonzero.")
+            except ValueError as exc:
+                raise ValueError(
+                    f"{target} cannot represent coordinate {name!r}: {exc}"
+                ) from exc
+            out[name] = (start, step)
+        return out
 
 
 # ------------------------ Dataformat converters
@@ -503,42 +608,48 @@ class UnidasBaseDASConverter(Converter):
         out = base_das.to_dict(flavor="xdas")
         return xdas.DataArray(**out)
 
+    @converts_to("xarray.DataArray")
+    def to_xarray_dataarray(self, base_das: BaseDAS):
+        """Convert to an xarray data array."""
+        xr = optional_import("xarray")
+        return xr.DataArray(**base_das.to_dict(flavor="xarray"))
+
     @converts_to("daspy.Section")
     def to_daspy_section(self, base_das: BaseDAS):
         """Convert to a daspy section."""
         daspy = optional_import("daspy")
         dasdt = daspy.DASDateTime
-        out = base_das.transpose("time", "distance").to_dict(flavor="simple")
-        time_coord = base_das.coords["time"]
-        dist_coord = base_das.coords["distance"]
-        start_time = time_to_datetime(time_coord.get_start())
-        section = daspy.Section(
-            data=out["data"].T,
-            fs=1 / time_to_float(time_coord.get_step()),
-            dx=dist_coord.get_step(),
-            start_distance=dist_coord.get_start(),
+        sampling = base_das.get_sampling("daspy.Section")
+        time_start, time_step = sampling["time"]
+        distance_start, distance_step = sampling["distance"]
+        start_time = time_to_datetime(time_start)
+        # Coordinates and data are authoritative when metadata contains stale
+        # structural fields such as fs, dx, or start_time.
+        kwargs = dict(base_das.attrs)
+        kwargs.update(
+            data=base_das.transpose("distance", "time").data,
+            fs=1 / time_to_float(time_step),
+            dx=distance_step,
+            start_distance=distance_start,
             start_time=dasdt.from_datetime(start_time),
-            **out["attrs"],
         )
-        return section
+        return daspy.Section(**kwargs)
 
     @converts_to("lightguide.Blast")
-    def to_lightguide_blast(self, base_base: BaseDAS):
+    def to_lightguide_blast(self, base_das: BaseDAS):
         """Convert to a lightguide blast."""
         lg_blast = optional_import("lightguide.blast")
-
-        data_dict = base_base.to_dict(flavor="simple")
-        coords = data_dict["coords"]
-        dist_step = coords["distance"]["step"]
-        start_channel = round(coords["distance"]["tie_values"][0] / dist_step)
+        sampling = base_das.get_sampling("lightguide.Blast")
+        time_start, time_step = sampling["time"]
+        distance_start, distance_step = sampling["distance"]
+        start_channel = round(distance_start / distance_step)
 
         out = lg_blast.Blast(
-            data=data_dict["data"],
-            start_time=time_to_datetime(coords["time"]["tie_values"][0]),
-            sampling_rate=1 / time_to_float(coords["time"]["step"]),
+            data=base_das.transpose("distance", "time").data,
+            start_time=time_to_datetime(time_start),
+            sampling_rate=1 / time_to_float(time_step),
             start_channel=start_channel,
-            channel_spacing=coords["distance"]["step"],
-            # **data_dict["attrs"],
+            channel_spacing=distance_step,
         )
         return out
 
@@ -557,18 +668,21 @@ class DASCorePatchConverter(Converter):
 
     def _to_base_coords(self, coord, dims):
         """Convert a coordinate to base coordinates."""
+        # Portable unit strings also keep xarray attrs serializable. DASCore
+        # parses these back to quantities, including any unit scale.
+        units = str(coord.units) if coord.units is not None else None
         if coord.evenly_sampled:
             tie_inds = (0, len(coord) - 1)
             tie_vals = (coord.start, coord.stop - coord.step)
             return EvenlySampledCoordinate(
                 tie_values=tie_vals,
                 tie_indices=tie_inds,
-                units=coord.units,
+                units=units,
                 dims=dims,
                 step=coord.step,
             )
         else:
-            return ArrayCoordinate(data=coord.data, units=coord.units, dims=dims)
+            return ArrayCoordinate(data=coord.data, units=units, dims=dims)
 
     @converts_to("unidas.BaseDAS")
     def to_base(self, patch) -> BaseDAS:
@@ -685,7 +799,7 @@ class XDASConverter(Converter):
         coords = data_array.coords
         coords_out = {}
         for name, coord in coords.items():
-            dims = (coord.dim,) if isinstance(coord.dim, str) else (name,)
+            dims = (coord.dim,) if coord.dim is not None else ()
             # It seems the InterpCoordinate is evenly sampled, monotonic.
             if isinstance(coord, xdas.InterpCoordinate):
                 # Other libraries handle gaps differently. For now, we raise if
@@ -721,8 +835,38 @@ class XDASConverter(Converter):
             dims=data_array.dims,
             coords=self._to_base_coords(data_array),
             attrs=attrs,
+            name=data_array.name,
         )
         return out
+
+
+class XArrayConverter(Converter):
+    """Converter for xarray DataArrays, including non-dimensional coordinates."""
+
+    name = "xarray.DataArray"
+
+    @converts_to("unidas.BaseDAS")
+    def to_base(self, data_array) -> BaseDAS:
+        """Preserve the DataArray's values, dimensions, and descriptive metadata."""
+        coords = {}
+        for name, coord in data_array.coords.items():
+            attrs = dict(coord.attrs)
+            units = attrs.get("units")
+            if units is not None:
+                attrs.pop("units")
+            coords[name] = ArrayCoordinate(
+                data=coord.data,
+                dims=coord.dims,
+                units=units,
+                attrs=attrs,
+            )
+        return BaseDAS(
+            data=data_array.data,
+            dims=data_array.dims,
+            coords=coords,
+            attrs=dict(data_array.attrs),
+            name=data_array.name,
+        )
 
 
 def adapter(to: str):

@@ -10,10 +10,12 @@ import daspy
 import numpy as np
 import pandas as pd
 import pytest
-import unidas
+import xarray as xr
 from dascore.examples import EXAMPLE_PATCHES
-from unidas import BaseDAS, Converter, adapter, convert, optional_import
 from xdas.core.dataarray import DataArray
+
+import unidas
+from unidas import BaseDAS, Converter, adapter, convert, optional_import
 
 try:
     from lightguide.blast import Blast
@@ -34,6 +36,7 @@ LIGHTGUIDE_SUPPORTED = not ON_WINDOWS and LIGHTGUIDE_AVAILABLE
 # A tuple of format names for testing generic conversions.
 NAME_CLASS_MAP = {
     "dascore.Patch": dc.Patch,
+    "xarray.DataArray": xr.DataArray,
     "xdas.DataArray": DataArray,
     "daspy.Section": daspy.Section,
     "lightguide.Blast": Blast,
@@ -149,6 +152,8 @@ class TestCoordinate:
             coord.get_step()
         with pytest.raises(NotImplementedError, match=msg):
             coord.get_start()
+        with pytest.raises(NotImplementedError, match=msg):
+            coord.get_array()
 
     def test_single_sample_coordinate_to_xdas(self):
         """
@@ -498,6 +503,16 @@ class TestLightGuideBlast:
         """Test that the base blast can be converted to all formats."""
         out = convert(lightguide_blast, to=format_name)
         assert isinstance(out, NAME_CLASS_MAP[format_name])
+
+
+class TestXarrayConversions:
+    """Exercise xarray as a source in the shared format matrix."""
+
+    def test_convert_data_array_to_other(self, xarray_dataarray, format_name):
+        """An ordinary DAS DataArray converts to every supported format."""
+        out = convert(xarray_dataarray, to=format_name)
+        assert isinstance(out, NAME_CLASS_MAP[format_name])
+        np.testing.assert_array_equal(out.data, xarray_dataarray.data)
 
 
 class TestConvert:

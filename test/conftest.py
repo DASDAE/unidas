@@ -7,8 +7,10 @@ import platform
 
 import dascore as dc
 import daspy
+import numpy as np
 import pooch
 import pytest
+import xarray as xr
 from xdas.synthetics import wavelet_wavefronts
 
 
@@ -51,3 +53,21 @@ def xdas_dataarray():
     """Load an xdas data array."""
     dar = wavelet_wavefronts().load()
     return dar
+
+
+@pytest.fixture(scope="session")
+def xarray_dataarray():
+    """Create a DataArray independently of the other converters."""
+    time = np.datetime64("2020-01-01T00:00:00.123456789") + np.arange(
+        6, dtype=np.int64
+    ) * np.timedelta64(2, "ms")
+    return xr.DataArray(
+        np.arange(18, dtype=np.float32).reshape(3, 6),
+        dims=("distance", "time"),
+        coords={
+            "distance": ("distance", np.arange(3) * 0.1, {"units": "m"}),
+            "time": time,
+        },
+        attrs={"description": "Synthetic DAS data"},
+        name="strain_rate",
+    )
