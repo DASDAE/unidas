@@ -489,9 +489,10 @@ def test_fractional_nanosecond_sampling(rate, source, target):
             },
         )
     else:
-        offsets = np.rint(np.arange(count) * 1_000_000_000 / rate).astype(
-            "timedelta64[ns]"
-        )
+        offsets = np.rint(
+            np.arange(count, dtype=np.float64) * 1_000_000_000 / rate
+        ).astype("timedelta64[ns]")
+        assert offsets[-1] == np.timedelta64(1, "s")
         array = xr.DataArray(
             np.zeros((2, count)),
             dims=("distance", "time"),
