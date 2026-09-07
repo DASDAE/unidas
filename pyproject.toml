@@ -45,6 +45,7 @@ dependencies = [
 [project.optional-dependencies]
 
 extras = [
+    "xarray",
     "dascore; python_version < '3.13'",
     "daspy-toolbox; python_version < '3.13'",
     "lightguide; platform_system != 'Windows' and python_version < '3.13'",
@@ -73,6 +74,8 @@ dev = ["unidas[test]", "unidas[extras]"]
 # --- External tool configuration
 
 [tool.ruff]
+
+src = ["src"]
 
 line-length = 88
 
