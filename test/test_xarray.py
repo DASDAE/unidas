@@ -465,3 +465,59 @@ def test_float32_jitter_is_not_rounding():
 def test_scalar_coordinate_named_like_dimension():
     """A scalar coordinate may share a dimension name without labeling its axis."""
     assert_round_trip(xr.DataArray([1, 2], dims="x", coords={"x": 3.0}))
+
+
+@pytest.mark.parametrize("rate", [1024, 3000])
+@pytest.mark.parametrize("source", ["xarray", "xdas"])
+@pytest.mark.parametrize("target", ["daspy.Section", "lightguide.Blast"])
+def test_fractional_nanosecond_sampling(rate, source, target):
+    """Common sampling rates survive nanosecond rounding of timestamp labels."""
+    pytest.importorskip(target.split(".")[0])
+    count = rate + 1
+    start = np.datetime64("2020-01-01", "ns")
+    if source == "xdas":
+        xdas = pytest.importorskip("xdas")
+        array = xdas.DataArray(
+            np.zeros((2, count)),
+            dims=("distance", "time"),
+            coords={
+                "distance": [0, 1],
+                "time": {
+                    "tie_indices": [0, count - 1],
+                    "tie_values": [start, start + np.timedelta64(1, "s")],
+                },
+            },
+        )
+    else:
+        offsets = np.rint(np.arange(count) * 1_000_000_000 / rate).astype(
+            "timedelta64[ns]"
+        )
+        array = xr.DataArray(
+            np.zeros((2, count)),
+            dims=("distance", "time"),
+            coords={"distance": [0, 1], "time": start + offsets},
+        )
+    out = convert(array, target)
+    out_rate = out.fs if target == "daspy.Section" else out.sampling_rate
+    assert out_rate == pytest.approx(rate)
+    np.testing.assert_array_equal(out.data, array.data)
+
+
+def test_datetime_sampling_rejects_actual_jitter(xarray_dataarray):
+    """Clock jitter larger than timestamp quantization is still irregular."""
+    time = xarray_dataarray.time.values.copy()
+    time[3] += np.timedelta64(10, "us")
+    array = xarray_dataarray.assign_coords(time=time)
+    with pytest.raises(ValueError, match="time.*evenly sampled"):
+        convert(array, "daspy.Section")
+
+
+def test_dascore_unknown_units_identify_coordinate():
+    """An unknown coordinate unit reports both the destination and coordinate."""
+    array = xr.DataArray(
+        np.zeros(3),
+        dims="distance",
+        coords={"distance": ("distance", [0, 1, 2], {"units": "not_a_unit"})},
+    )
+    with pytest.raises(ValueError, match="dascore.*distance"):
+        convert(array, "dascore.Patch")

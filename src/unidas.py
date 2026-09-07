@@ -375,6 +375,15 @@ class ArrayCoordinate(Coordinate):
             diff = np.diff(data.astype(object) if integer else data)
             if np.all(diff == diff[0]) and (integer or np.all(np.isfinite(diff))):
                 return diff[0]
+            if data.dtype.kind in "mM":
+                # Rates such as 1024 or 3000 Hz require fractional nanoseconds.
+                # Fit relative ticks so epoch magnitude cannot erase precision.
+                offsets = (data - data[0]).astype(np.float64)
+                step = offsets[-1] / (len(data) - 1)
+                expected = np.arange(len(data)) * step
+                if np.isfinite(step) and np.all(np.abs(offsets - expected) <= 1):
+                    unit = np.datetime_data(data.dtype)[0]
+                    return step * time_to_float(np.timedelta64(1, unit))
         msg = "Array coordinates must be evenly sampled."
         raise ValueError(msg)
 
@@ -425,7 +434,7 @@ class BaseDAS:
         for name, coord in self.coords.items():
             try:
                 converted = coord.to_dict(flavor=flavor)
-            except (TypeError, ValueError) as exc:
+            except (TypeError, ValueError, AttributeError) as exc:
                 raise ValueError(
                     f"{flavor} cannot represent coordinate {name!r}: {exc}"
                 ) from exc
