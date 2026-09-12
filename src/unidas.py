@@ -275,19 +275,20 @@ class EvenlySampledCoordinate(Coordinate):
             return None
         return self.step_numerator, self.step_denominator or 1, self.origin_offset or 0
 
+    def _is_time(self):
+        """Whether the labels are dates or durations rather than numbers."""
+        return np.asarray(self.get_start()).dtype.kind in "mM"
+
     def _tick_seconds(self):
         """
         How long one of this coordinate's ticks is, in seconds.
 
-        None when it is not a time, whose ticks are whatever it counts, or
-        when its unit has no one length, as a month and a year have not.
+        Asked only of a time; None when its unit has no one length, as a
+        month and a year have not.
         """
-        dtype = np.asarray(self.get_start()).dtype
-        if dtype.kind not in "mM":
-            return None
         # A dtype states its unit and how many of them one tick is, and both
         # answer the question: datetime64[10us] counts ten microseconds.
-        unit, count = np.datetime_data(dtype)
+        unit, count = np.datetime_data(np.asarray(self.get_start()).dtype)
         seconds = TICK_SECONDS.get(unit)
         return None if seconds is None else seconds * count
 
@@ -296,8 +297,8 @@ class EvenlySampledCoordinate(Coordinate):
         if (grid := self.exact_grid) is None or grid[1] == 1:
             return None  # the stored step already states this one exactly.
         num, den, _ = grid
-        if np.asarray(self.get_start()).dtype.kind not in "mM":
-            return Fraction(num, den)
+        if not self._is_time():
+            return Fraction(num, den)  # ticks of whatever it counts.
         seconds = self._tick_seconds()
         return None if seconds is None else Fraction(num, den) * seconds
 
@@ -342,8 +343,7 @@ class EvenlySampledCoordinate(Coordinate):
             # DASCore counts a time's ticks in nanoseconds. A grid counted in
             # anything else would be read as though it were, so that one
             # travels as the labels it has rather than as a grid it has not.
-            time = np.asarray(start).dtype.kind in "mM"
-            if time and self._tick_seconds() != TICK_SECONDS["ns"]:
+            if self._is_time() and self._tick_seconds() != TICK_SECONDS["ns"]:
                 return dc_core.get_coord(data=self.get_array(), units=self.units)
             # State the grid itself rather than its rounded endpoints, which
             # is the only way a fractional rate survives with its phase.

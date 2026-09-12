@@ -640,6 +640,51 @@ def test_exact_grid_keeps_the_phase_it_was_sliced_at():
     assert coord.exact_grid == (5859375, 2, 1)
 
 
+def segmented_of(start, step, size, count, apart):
+    """A coordinate of runs, each `size` long and `apart` steps from the next."""
+    runs = tuple(
+        EvenlySampledCoordinate(
+            step=step,
+            tie_values=(origin, origin + step * (size - 1)),
+            tie_indices=(0, size - 1),
+            dims=("time",),
+        )
+        for origin in (start + step * apart * i for i in range(count))
+    )
+    return SegmentedCoordinate(segments=runs, dims=("time",))
+
+
+def test_segmented_coordinate_describes_itself():
+    """A coordinate of runs states its length and where it begins."""
+    start = np.datetime64("2020-01-01", "ns")
+    coord = segmented_of(start, np.timedelta64(4, "ms"), 10, 3, 20)
+    assert len(coord) == 30
+    assert coord.shape == (30,)
+    assert coord.get_start() == start
+    # Its runs reach DASCore as runs, or as the labels of one which has no
+    # way to say that samples are missing between them.
+    out = coord.to_dascore_coord()
+    np.testing.assert_array_equal(np.asarray(out.values), coord.get_array())
+
+
+def test_a_fractional_grid_reaches_xdas_as_its_labels():
+    """Tie points state one spacing, which a fractional grid has not."""
+    xdas = pytest.importorskip("xdas")
+    start = np.datetime64("2020-01-01", "ns")
+    coord = EvenlySampledCoordinate(
+        step=np.timedelta64(976562, "ns"),
+        tie_values=(start, start + np.timedelta64(976562 * 5, "ns")),
+        tie_indices=(0, 5),
+        dims=("time",),
+        step_numerator=1953125,
+        step_denominator=2,
+        origin_offset=0,
+    )
+    out = coord.to_xdas_coord()
+    assert isinstance(out, xdas.DenseCoordinate)
+    np.testing.assert_array_equal(np.asarray(out.values), exact_labels(start, 1024, 6))
+
+
 def test_segmented_coordinate_states_its_runs():
     """A coordinate with a hole keeps the runs on either side of it."""
     start = np.datetime64("2020-01-01", "ns")
@@ -683,6 +728,11 @@ def test_extraction_of_an_integer_grid():
     coord = _base_coord_from(StubCoordinate(0, 3, 4, grid=(3, 1, 0)), ("channel",))
     np.testing.assert_array_equal(coord.get_array(), np.arange(4) * 3)
     assert coord.get_step() == 3
+    # Halves of its own units, rather than of a second: every other sample
+    # of a grid spaced three apart, labeled by the whole unit below.
+    half = _base_coord_from(StubCoordinate(0, 1, 5, grid=(3, 2, 0)), ("channel",))
+    assert half.get_step() == Fraction(3, 2)
+    np.testing.assert_array_equal(half.get_array(), [0, 1, 3, 4, 6])
 
 
 def test_extraction_falls_back_to_labels():
@@ -727,6 +777,17 @@ def test_an_index_stating_nothing_new_keeps_its_labels(kind):
     out = base.coords["distance"].get_array()
     assert out.dtype == labels.dtype
     np.testing.assert_array_equal(out, labels)
+
+
+def test_an_index_stating_runs_is_read_from_them():
+    """Runs with gaps between them are what labels alone cannot say."""
+    start = np.datetime64("2020-01-01", "ns")
+    step = np.timedelta64(4, "ms")
+    run = StubCoordinate(start, step, 3, grid=(4_000_000, 1, 0))
+    stub = StubCoordinate(start, step, 6, segments=(run, run))
+    labels = np.concatenate([run.start + np.arange(3) * step] * 2)
+    base = convert(indexed_by(stub, labels), "unidas.BaseDAS")
+    assert isinstance(base.coords["time"], SegmentedCoordinate)
 
 
 def test_a_tick_is_as_long_as_its_dtype_says():
@@ -783,7 +844,18 @@ def test_a_grid_of_other_ticks_travels_as_its_labels(unit):
     np.testing.assert_array_equal(coord.to_dascore_coord().values, labels)
 
 
-def test_a_nanosecond_grid_travels_as_a_grid():
+def test_a_whole_tick_grid_travels_as_a_grid():
+    """A grid of whole nanoseconds is stated, and its labels are its labels."""
+    start = np.datetime64("2020-01-01", "ns")
+    step = np.timedelta64(4_000_000, "ns")
+    labels = start + np.arange(6) * step
+    stub = StubCoordinate(start, step, 6, grid=(4_000_000, 1, 0))
+    coord = convert(indexed_by(stub, labels), "unidas.BaseDAS").coords["time"]
+    # A DASCore which cannot state the grid holds what it produces instead.
+    np.testing.assert_array_equal(np.asarray(coord.to_dascore_coord().values), labels)
+
+
+def test_a_fractional_grid_travels_as_a_grid():
     """The resolution DASCore counts in is stated, not spelled out."""
     start = np.datetime64("2020-01-01", "ns")
     labels = exact_labels(start, 1024, 6)
