@@ -276,10 +276,15 @@ class EvenlySampledCoordinate(Coordinate):
         return self.step_numerator, self.step_denominator or 1, self.origin_offset or 0
 
     def _tick_seconds(self):
-        """How long one of this coordinate's ticks is, in seconds, or None."""
+        """
+        How long one of this coordinate's ticks is, in seconds.
+
+        None when it is not a time, whose ticks are whatever it counts, or
+        when its unit has no one length, as a month and a year have not.
+        """
         dtype = np.asarray(self.get_start()).dtype
         if dtype.kind not in "mM":
-            return Fraction(1)  # an ordinary number counts its own units.
+            return None
         # A dtype states its unit and how many of them one tick is, and both
         # answer the question: datetime64[10us] counts ten microseconds.
         unit, count = np.datetime_data(dtype)
@@ -288,13 +293,13 @@ class EvenlySampledCoordinate(Coordinate):
 
     def _exact_step(self):
         """The exact spacing in the coordinate's units, or None."""
-        if (grid := self.exact_grid) is None:
-            return None
-        num, den, _ = grid
-        seconds = self._tick_seconds()
-        if den == 1 or seconds is None:
+        if (grid := self.exact_grid) is None or grid[1] == 1:
             return None  # the stored step already states this one exactly.
-        return Fraction(num, den) * seconds
+        num, den, _ = grid
+        if np.asarray(self.get_start()).dtype.kind not in "mM":
+            return Fraction(num, den)
+        seconds = self._tick_seconds()
+        return None if seconds is None else Fraction(num, den) * seconds
 
     def get_array(self):
         """Expand sampled coordinates, keeping datetime arithmetic exact."""
@@ -337,19 +342,32 @@ class EvenlySampledCoordinate(Coordinate):
             # DASCore counts a time's ticks in nanoseconds. A grid counted in
             # anything else would be read as though it were, so that one
             # travels as the labels it has rather than as a grid it has not.
-            if self._tick_seconds() not in (Fraction(1), TICK_SECONDS["ns"]):
+            time = np.asarray(start).dtype.kind in "mM"
+            if time and self._tick_seconds() != TICK_SECONDS["ns"]:
                 return dc_core.get_coord(data=self.get_array(), units=self.units)
             # State the grid itself rather than its rounded endpoints, which
             # is the only way a fractional rate survives with its phase.
-            return dc_core.get_coord(
-                start=start,
-                step=self.step,
-                shape=(len(self),),
-                step_numerator=num,
-                step_denominator=den,
-                origin_offset=offset,
-                units=self.units,
-            )
+            try:
+                return dc_core.get_coord(
+                    start=start,
+                    step=self.step,
+                    shape=(len(self),),
+                    step_numerator=num,
+                    step_denominator=den,
+                    origin_offset=offset,
+                    units=self.units,
+                )
+            except TypeError:
+                # A DASCore from before exact grids can still hold the labels
+                # the grid produces -- unless it reads a rounded range back
+                # out of them, which is what a fractional grid's labels
+                # invite, and which would move the samples silently.
+                labels = self.get_array()
+                out = dc_core.get_coord(data=labels, units=self.units)
+                if not np.array_equal(np.asarray(out.values), labels):
+                    msg = "this dascore cannot hold a grid of fractional ticks."
+                    raise ValueError(msg) from None
+                return out
 
         if isinstance(start, datetime.datetime):
             start = dc.to_datetime64(start)
@@ -365,7 +383,7 @@ class EvenlySampledCoordinate(Coordinate):
         """Convert to an XDAS coordinate."""
         xdas = optional_import("xdas")
         dim = self.dims[0] if len(self.dims) == 1 else None
-        if self._exact_step() is not None:
+        if (self.exact_grid or (0, 1, 0))[1] != 1:
             # Tie points state one spacing between them, which a fractional
             # grid does not have; its labels are exact where its step is not.
             return xdas.DenseCoordinate(data=self.get_array(), dim=dim)
@@ -542,7 +560,12 @@ class SegmentedCoordinate(Coordinate):
         """Convert to a dascore coordinate."""
         dc_core = optional_import("dascore.core")
         runs = [x.to_dascore_coord() for x in self.segments]
-        return dc_core.get_coord(segments=runs, units=self.units)
+        try:
+            return dc_core.get_coord(segments=runs, units=self.units)
+        except TypeError:
+            # A DASCore from before coordinate runs has the labels, and the
+            # gaps show in them; it has nowhere to say they are gaps.
+            return dc_core.get_coord(data=self.get_array(), units=self.units)
 
     def to_xdas_coord(self):
         """Convert to an XDAS coordinate."""
@@ -1140,7 +1163,13 @@ def _convert_operand(obj, to: str, kind: type):
     # made on is data this function is being handed a second helping of.
     if inspect.isclass(obj) or type(obj) is not kind:
         return obj
-    return convert(obj, to)
+    try:
+        return convert(obj, to)
+    except (ValueError, TypeError):
+        # Being the caller's type is not being the caller's data: a window or
+        # a mask is an array of the same class. One the target cannot hold is
+        # handed over as it arrived, for the function to use as it meant to.
+        return obj
 
 
 def adapter(to: str):

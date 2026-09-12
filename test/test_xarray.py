@@ -771,15 +771,33 @@ def test_an_exactly_representable_rate_stays_exact():
     assert float(1 / coord.get_step()) == 49.0
 
 
-def test_a_grid_of_other_ticks_travels_as_its_labels():
+@pytest.mark.parametrize("unit", ["us", "s"])
+def test_a_grid_of_other_ticks_travels_as_its_labels(unit):
     """DASCore counts a time in nanoseconds; another grid is not read as one."""
-    start = np.datetime64("2020-01-01", "us")
-    labels = start + np.asarray([0, 2, 5, 7, 10, 12], dtype="timedelta64[us]")
-    stub = StubCoordinate(start, np.timedelta64(2, "us"), 6, grid=(5, 2, 0))
+    start = np.datetime64("2020-01-01", unit)
+    labels = start + np.asarray([0, 2, 5, 7, 10, 12], dtype=f"timedelta64[{unit}]")
+    stub = StubCoordinate(start, np.timedelta64(2, unit), 6, grid=(5, 2, 0))
     base = convert(indexed_by(stub, labels), "unidas.BaseDAS")
     coord = base.coords["time"]
     np.testing.assert_array_equal(coord.get_array(), labels)
     np.testing.assert_array_equal(coord.to_dascore_coord().values, labels)
+
+
+def test_a_nanosecond_grid_travels_as_a_grid():
+    """The resolution DASCore counts in is stated, not spelled out."""
+    start = np.datetime64("2020-01-01", "ns")
+    labels = exact_labels(start, 1024, 6)
+    stub = StubCoordinate(start, np.timedelta64(976562, "ns"), 6, grid=(1953125, 2, 0))
+    coord = convert(indexed_by(stub, labels), "unidas.BaseDAS").coords["time"]
+    if not hasattr(dc.core.get_coord(start=0, step=1, shape=(2,)), "step_numerator"):
+        # A DASCore from before exact grids would read a rounded range back
+        # out of these labels, so it says it cannot hold them.
+        with pytest.raises(ValueError, match="fractional ticks"):
+            coord.to_dascore_coord()
+        return
+    out = coord.to_dascore_coord()
+    assert (out.step_numerator, out.step_denominator) == (1953125, 2)
+    np.testing.assert_array_equal(out.values, labels)
 
 
 def test_a_lazy_coordinate_is_not_computed_to_be_described():
@@ -924,6 +942,21 @@ def test_adapter_passes_other_arguments_through(dascore_patch):
 
     out = scale(dascore_patch, 2.0, window, np.arange(3), kind=dc.Patch)
     np.testing.assert_allclose(out.data, dascore_patch.data * 2)
+
+
+def test_adapter_leaves_an_option_the_target_cannot_hold(dascore_patch):
+    """Being the caller's type is not being the caller's data."""
+
+    @adapter("daspy.Section")
+    def bandpass(section, taper):
+        """Filter a section with a window."""
+        return type(taper).__name__
+
+    pytest.importorskip("daspy")
+    array = convert(dascore_patch, "xarray.DataArray")
+    # A window is an array of the caller's own class, and no section.
+    window = xr.DataArray(np.hanning(8), dims=("window",))
+    assert bandpass(array, window) == "DataArray"
 
 
 def test_adapter_returns_a_class_of_the_target_unchanged(dascore_patch):
