@@ -223,15 +223,15 @@ class EvenlySampledCoordinate(Coordinate):
         The dimensions with which the coordinate is associated.
     attrs
         Coordinate metadata other than units.
-    step_exact
-        The exact spacing, as a fraction of the coordinate's own units
-        (seconds for times), when ``step`` is a rounded view of it. A rate
-        such as 1024 Hz has no whole-nanosecond period, so stepping by the
-        rounded value drifts. None when the spacing has no exact form.
-    origin_offset
-        How far the grid's ideal origin sits past the first label, in the
-        same units as ``step_exact``. A slice of a fractional grid keeps the
-        phase it was cut at; without it the samples move onto another grid.
+    step_numerator, step_denominator, origin_offset
+        The exact grid, in whole ticks of the coordinate's own resolution:
+        sample ``i`` sits at ``(origin_offset + i * step_numerator) /
+        step_denominator`` ticks past the first label, and is labeled by the
+        tick below that. A rate such as 1024 Hz has no whole-nanosecond
+        period, so ``step`` is a rounded view of it and stepping by that
+        value drifts; a slice of such a grid also keeps the phase it was cut
+        at, which its first label alone does not state. All three are None
+        when the sampling has no exact form, as a float coordinate's has not.
     """
 
     step: Any
@@ -240,27 +240,37 @@ class EvenlySampledCoordinate(Coordinate):
     units: Any = None
     dims: tuple[str, ...] = ()
     attrs: dict[str, Any] = field(default_factory=dict)
-    step_exact: Fraction | None = None
-    origin_offset: Fraction | None = None
+    step_numerator: int | None = None
+    step_denominator: int | None = None
+    origin_offset: int | None = None
 
     @property
     def shape(self):
         """Return the coordinate shape without expanding its values."""
         return (len(self),)
 
-    def _grid_ticks(self):
-        """The exact grid as (numerator, denominator, offset) whole ticks."""
-        dtype = np.asarray(self.get_start()).dtype
-        # A time counts the ticks its dtype states; anything else its own units.
-        one = np.timedelta64(1, "s")
-        per_unit = (
-            int(one // np.timedelta64(1, np.datetime_data(dtype)[0]))
-            if dtype.kind in "mM"
-            else 1
-        )
-        ratio = self.step_exact * per_unit
-        offset = (self.origin_offset or 0) * per_unit * ratio.denominator
-        return ratio.numerator, ratio.denominator, int(offset)
+    @property
+    def exact_grid(self):
+        """The grid as (numerator, denominator, offset) ticks, or None."""
+        if self.step_numerator is None:
+            return None
+        return self.step_numerator, self.step_denominator or 1, self.origin_offset or 0
+
+    def _exact_step(self):
+        """The exact spacing in the coordinate's units, or None."""
+        if (grid := self.exact_grid) is None:
+            return None
+        num, den, _ = grid
+        if den == 1:
+            return None  # the stored step already states this one exactly.
+        tick = np.asarray(self.get_start()).dtype
+        if tick.kind not in "mM":
+            return Fraction(num, den)
+        # A tick is a second's own fraction, which for a coarse unit is
+        # larger than a second; both directions must stay exact.
+        unit = np.timedelta64(1, np.datetime_data(tick)[0])
+        seconds = Fraction(int(unit.astype("timedelta64[ns]").astype("int64")), 10**9)
+        return Fraction(num, den) * seconds
 
     def get_array(self):
         """Expand sampled coordinates, keeping datetime arithmetic exact."""
@@ -269,10 +279,10 @@ class EvenlySampledCoordinate(Coordinate):
         start, step = self.get_start(), self.step
         if isinstance(start, datetime.datetime):
             start = np.datetime64(to_stripped_utc(time_to_datetime(start)))
-        if self.step_exact is not None:
+        if self.exact_grid is not None:
             # Count exact ticks from the origin: adding a rounded step 'size'
             # times accumulates its rounding error into the later labels.
-            num, den, offset = self._grid_ticks()
+            num, den, offset = self.exact_grid
             ticks = (offset + np.arange(len(self), dtype=np.int64) * num) // den
             base = np.asarray(start)
             return (base.astype("int64") + ticks).astype(base.dtype)
@@ -298,13 +308,13 @@ class EvenlySampledCoordinate(Coordinate):
 
         start, stop, step = self.tie_values[0], self.tie_values[-1], self.step
 
-        if self.step_exact is not None:
+        if self.exact_grid is not None:
             # State the grid itself rather than its rounded endpoints, which
             # is the only way a fractional rate survives with its phase.
-            num, den, offset = self._grid_ticks()
+            num, den, offset = self.exact_grid
             return dc_core.get_coord(
                 start=start,
-                step=self.step_exact,
+                step=self.step,
                 shape=(len(self),),
                 step_numerator=num,
                 step_denominator=den,
@@ -325,13 +335,17 @@ class EvenlySampledCoordinate(Coordinate):
     def to_xdas_coord(self):
         """Convert to an XDAS coordinate."""
         xdas = optional_import("xdas")
+        dim = self.dims[0] if len(self.dims) == 1 else None
+        if self._exact_step() is not None:
+            # Tie points state one spacing between them, which a fractional
+            # grid does not have; its labels are exact where its step is not.
+            return xdas.DenseCoordinate(data=self.get_array(), dim=dim)
         # Currently, xdas expects a number or numpy datatime, need to convert
         # python datetimes to numpy.
         tie_values = self.tie_values
         # Tie values currently have to be either datetimes or floats
         if isinstance(self.tie_values[0], datetime.datetime):
             tie_values = [np.datetime64(to_stripped_utc(x)) for x in tie_values]
-        dim = self.dims[0] if len(self.dims) == 1 else None
         # xdas requires strictly increasing tie indices, which an axis holding a
         # single sample cannot provide, so it is represented as a dense one.
         if len(self) == 1:
@@ -344,8 +358,11 @@ class EvenlySampledCoordinate(Coordinate):
         return self.tie_indices[-1] - self.tie_indices[0] + 1
 
     def get_step(self):
-        """Return the coordinate step."""
-        return self.step
+        """Return the coordinate step, exactly where the stored one rounds."""
+        exact = self._exact_step()
+        # A consumer wanting a rate divides by this, so a rounded tick is a
+        # rounded rate: 1/48000 s stored as 20833 ns reads as 48000.77 Hz.
+        return self.step if exact is None else float(exact)
 
     def get_start(self):
         """Return the first coordinate value."""
@@ -496,6 +513,24 @@ class SegmentedCoordinate(Coordinate):
         runs = [x.to_dascore_coord() for x in self.segments]
         return dc_core.get_coord(segments=runs, units=self.units)
 
+    def to_xdas_coord(self):
+        """Convert to an XDAS coordinate."""
+        xdas = optional_import("xdas")
+        # Tie points state one spacing across the gaps as well as within the
+        # runs, which is the thing this coordinate exists to deny; the labels
+        # state where the samples are without claiming anything between them.
+        dim = self.dims[0] if len(self.dims) == 1 else None
+        return xdas.DenseCoordinate(data=self.get_array(), dim=dim)
+
+    def get_step(self):
+        """Refuse a single spacing, which runs with gaps between them lack."""
+        raise ValueError("A coordinate with gaps is not evenly sampled.")
+
+
+# What a coordinate must state before its sampling is read instead of its
+# labels. A provider stating only some of it is not describing a grid.
+_SAMPLED_FIELDS = ("start", "stop", "step", "dtype")
+
 
 def _base_coord_from(coord, dims, units=None, attrs=None):
     """
@@ -517,20 +552,21 @@ def _base_coord_from(coord, dims, units=None, attrs=None):
     attrs
         Coordinate metadata other than units.
     """
+    # A portable unit string keeps a destination's attrs serializable, and
+    # DASCore parses one back to a quantity, unit scale included.
     if units is None and getattr(coord, "units", None) is not None:
         units = str(coord.units)
     shared = {"units": units, "dims": tuple(dims), "attrs": dict(attrs or {})}
     if (segments := getattr(coord, "segments", None)) is not None:
         runs = tuple(_base_coord_from(x, dims) for x in segments)
         return SegmentedCoordinate(segments=runs, **shared)
-    if getattr(coord, "evenly_sampled", False):
-        # The phase is stored in ticks of the grid's own denominator. Stated
-        # as a share of one step it needs no knowledge of the tick size.
-        exact = getattr(coord, "step_exact", None)
+    # Sampling is only as good as everything it is described by, so a provider
+    # which states some of it is read from its labels like any other.
+    sampled = all(getattr(coord, x, None) is not None for x in _SAMPLED_FIELDS)
+    if getattr(coord, "evenly_sampled", False) and sampled:
         numerator = getattr(coord, "step_numerator", None)
-        offset = getattr(coord, "origin_offset", None) or 0
-        start = coord.start
-        if exact is not None:
+        start, exact = coord.start, numerator is not None
+        if exact:
             # An exact grid counts ticks of the coordinate's resolution, which
             # a label need not state on its own: midnight reads as a whole day.
             start = np.asarray(start).astype(coord.dtype)[()]
@@ -538,8 +574,9 @@ def _base_coord_from(coord, dims, units=None, attrs=None):
             step=coord.step,
             tie_values=(start, coord.stop - coord.step),
             tie_indices=(0, len(coord) - 1),
-            step_exact=exact,
-            origin_offset=Fraction(offset) * exact / numerator if numerator else None,
+            step_numerator=numerator,
+            step_denominator=getattr(coord, "step_denominator", None),
+            origin_offset=getattr(coord, "origin_offset", None),
             **shared,
         )
     return ArrayCoordinate(data=coord.data, **shared)
@@ -1045,10 +1082,15 @@ class XArrayConverter(Converter):
         )
 
 
-def _convert_operand(obj, to: str):
-    """Convert an operand unidas knows how to convert; leave anything else."""
-    cls = obj if inspect.isclass(obj) else type(obj)
-    return convert(obj, to) if get_class_key(cls) in Converter._registry else obj
+def _convert_operand(obj, to: str, kind: type):
+    """Convert another operand of the caller's own kind; leave anything else."""
+    # A class names a type rather than holding data, and a library's array
+    # type is also used for ordinary options -- a taper window is an
+    # xarray.DataArray too. Only another operand of the kind the call was
+    # made on is data this function is being handed a second helping of.
+    if inspect.isclass(obj) or type(obj) is not kind:
+        return obj
+    return convert(obj, to)
 
 
 def adapter(to: str):
@@ -1091,13 +1133,13 @@ def adapter(to: str):
             # The other operands are data too: a function of two sections
             # takes two of whatever the caller holds. Everything else --
             # scalars, arrays, options -- is passed along untouched.
-            args = tuple(_convert_operand(x, to) for x in args)
-            kwargs = {i: _convert_operand(v, to) for i, v in kwargs.items()}
+            args = tuple(_convert_operand(x, to, cls) for x in args)
+            kwargs = {i: _convert_operand(v, to, cls) for i, v in kwargs.items()}
             func_out = func(input_obj, *args, **kwargs)
-            cls_out = func_out if inspect.isclass(func_out) else type(func_out)
             # Sometimes a function can return a different type than its input
-            # e.g., a dataframe. In this case just return output.
-            if get_class_key(cls_out) != to:
+            # e.g., a dataframe. In this case just return output. A class is
+            # a type rather than an instance of one, and is never converted.
+            if inspect.isclass(func_out) or get_class_key(type(func_out)) != to:
                 return func_out
             # The first argument says which library the caller works in, so
             # that is the one the result is returned in.

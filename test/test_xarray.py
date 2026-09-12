@@ -547,11 +547,17 @@ def exact_labels(start, rate, count, phase=0, stride=1):
 
 
 class StubCoordinate:
-    """A provider's coordinate, which unidas reads without knowing its library."""
+    """
+    A provider's coordinate, which unidas reads without knowing its library.
+
+    The grid is stated the way a provider states it: whole ticks of the
+    coordinate's own resolution, as a numerator over a denominator, with the
+    origin's offset within one of them.
+    """
 
     data = property(lambda self: pytest.fail("The labels were spelled out."))
 
-    def __init__(self, start, step, size, step_exact=None, offset=0, segments=None):
+    def __init__(self, start, step, size, grid=None, segments=None):
         self.start = start
         self.step = step
         self.stop = start + step * size
@@ -559,13 +565,37 @@ class StubCoordinate:
         self.dtype = np.asarray(start).dtype
         self.units = None
         self.evenly_sampled = segments is None
-        self.step_exact = step_exact
-        self.step_numerator = None if step_exact is None else step_exact.numerator
-        self.origin_offset = offset
+        self.step_numerator, self.step_denominator, self.origin_offset = grid or (
+            None,
+            None,
+            None,
+        )
         self.segments = segments
 
     def __len__(self):
         return self.size
+
+
+class StubIndex(xr.Index):
+    """An xarray index which states the coordinate it serves."""
+
+    def __init__(self, coordinate, variables):
+        self.coordinate = coordinate
+        self._variables = variables
+
+    @classmethod
+    def from_variables(cls, variables, *, options):
+        """Build the index from the variables it is set on."""
+        (name,) = variables
+        size = variables[name].size
+        start = np.datetime64("2020-01-01", "ns")
+        step = np.timedelta64(976562, "ns")
+        coordinate = StubCoordinate(start, step, size, grid=(1953125, 2, 0))
+        return cls(coordinate, dict(variables))
+
+    def create_variables(self, variables=None):
+        """Return the variables this index stands for."""
+        return self._variables
 
 
 def test_exact_grid_labels_do_not_drift():
@@ -575,7 +605,9 @@ def test_exact_grid_labels_do_not_drift():
         step=np.timedelta64(976562, "ns"),
         tie_values=(start, start + np.timedelta64(976562 * 2047, "ns")),
         tie_indices=(0, 2047),
-        step_exact=Fraction(1, 1024),
+        step_numerator=1953125,
+        step_denominator=2,
+        origin_offset=0,
     )
     labels = coord.get_array()
     np.testing.assert_array_equal(labels, exact_labels(start, 1024, 2048))
@@ -586,16 +618,25 @@ def test_exact_grid_labels_do_not_drift():
 
 def test_exact_grid_keeps_the_phase_it_was_sliced_at():
     """A slice of a fractional grid stays on the grid it was cut from."""
-    start = np.datetime64("2020-01-01T00:00:00.006835937", "ns")
+    # Every third sample of a 1024 Hz grid, from the seventh: the first label
+    # is the seventh, and the origin sits half a tick before the grid's own.
+    origin = np.datetime64("2020-01-01", "ns")
+    start = exact_labels(origin, 1024, 8)[-1]
+    count, step = 331, np.timedelta64(2929686, "ns")
     coord = EvenlySampledCoordinate(
-        step=np.timedelta64(2929686, "ns"),
-        tie_values=(start, start),
-        tie_indices=(0, 330),
-        step_exact=Fraction(3, 1024),
-        origin_offset=Fraction(1, 2_000_000_000),
+        step=step,
+        tie_values=(start, start + step * (count - 1)),
+        tie_indices=(0, count - 1),
+        step_numerator=5859375,
+        step_denominator=2,
+        origin_offset=1,
     )
-    expected = exact_labels(start, 1024, 331, phase=Fraction(1, 2), stride=3)
+    expected = exact_labels(start, 1024, count, phase=Fraction(1, 2), stride=3)
     np.testing.assert_array_equal(coord.get_array(), expected)
+    # Reduced to 5859375/2 -> 5859375/2 the phase is a half tick; a grid
+    # stated as 1953125/1 with no phase carries the same labels but a
+    # different origin, which is what a neighbouring run is fused against.
+    assert coord.exact_grid == (5859375, 2, 1)
 
 
 def test_segmented_coordinate_states_its_runs():
@@ -621,15 +662,54 @@ def test_segmented_coordinate_states_its_runs():
 def test_extraction_reads_structure_not_labels():
     """A compact coordinate is read from what it states, not from its values."""
     start = np.datetime64("2020-01-01", "ns")
-    grid = StubCoordinate(start, np.timedelta64(976562, "ns"), 8, Fraction(1, 1024))
+    step = np.timedelta64(976562, "ns")
+    grid = StubCoordinate(start, step, 8, grid=(1953125, 2, 0))
     out = _base_coord_from(grid, ("time",))
     assert isinstance(out, EvenlySampledCoordinate)
-    assert out.step_exact == Fraction(1, 1024)
+    assert out.exact_grid == (1953125, 2, 0)
     np.testing.assert_array_equal(out.get_array(), exact_labels(start, 1024, 8))
+    # A phase is carried as stated, not recomputed from the reduced step.
+    phased = StubCoordinate(start, step, 8, grid=(5859375, 2, 1))
+    assert _base_coord_from(phased, ("time",)).exact_grid == (5859375, 2, 1)
     runs = StubCoordinate(start, np.timedelta64(4, "ms"), 8, segments=(grid, grid))
     segmented = _base_coord_from(runs, ("time",))
     assert isinstance(segmented, SegmentedCoordinate)
     assert len(segmented.segments) == 2
+
+
+def test_extraction_of_an_integer_grid():
+    """A grid which is not a time counts ticks of its own units."""
+    coord = _base_coord_from(StubCoordinate(0, 3, 4, grid=(3, 1, 0)), ("channel",))
+    np.testing.assert_array_equal(coord.get_array(), np.arange(4) * 3)
+    assert coord.get_step() == 3
+
+
+def test_extraction_falls_back_to_labels():
+    """A provider stating only part of a grid is read from its labels."""
+
+    class PartialCoordinate:
+        """A coordinate which says it is sampled but not how."""
+
+        evenly_sampled = True
+        step = 1
+        data = np.arange(3)
+
+    out = _base_coord_from(PartialCoordinate(), ("distance",))
+    assert isinstance(out, ArrayCoordinate)
+    np.testing.assert_array_equal(out.get_array(), np.arange(3))
+
+
+def test_an_index_is_read_from_the_coordinate_it_states():
+    """A lazy index hands over its coordinate instead of its labels."""
+    start = np.datetime64("2020-01-01", "ns")
+    labels = exact_labels(start, 1024, 6)
+    array = xr.DataArray(np.zeros(6), dims=("time",), coords={"time": labels})
+    array = array.drop_indexes("time").set_xindex("time", StubIndex)
+    base = convert(array, "unidas.BaseDAS")
+    coord = base.coords["time"]
+    assert isinstance(coord, EvenlySampledCoordinate)
+    assert coord.exact_grid == (1953125, 2, 0)
+    np.testing.assert_array_equal(coord.get_array(), labels)
 
 
 def test_time_coordinates_state_no_units_attribute():
@@ -641,11 +721,8 @@ def test_time_coordinates_state_no_units_attribute():
         dims=("time",),
     )
     assert "units" not in coord.to_xarray_coord().attrs
-    # Writing one raises when xarray encodes the variable for storage.
-    array = xr.DataArray(coord.get_array(), dims=("time",))
-    array.attrs["units"] = "1 s"
-    with pytest.raises(ValueError, match="already exists in attrs"):
-        xr.Dataset({"time": array}).to_netcdf()
+    numeric = ArrayCoordinate(data=np.arange(3.0), units="1 m", dims=("distance",))
+    assert numeric.to_xarray_coord().attrs["units"] == "1 m"
 
 
 def dascore_grid(rate=1024, size=2048):
@@ -742,14 +819,106 @@ def test_adapter_converts_every_operand(dascore_patch):
 
 
 def test_adapter_passes_other_arguments_through(dascore_patch):
-    """Scalars and options are not data, and are handed over as they are."""
+    """
+    An argument which is not the caller's data is handed over as it is.
+
+    A library's array type is used for ordinary options too -- a taper window
+    is an `xarray.DataArray` like any other -- so only another operand of the
+    kind the call was made on is taken to be more of the same data.
+    """
+    window = xr.DataArray(np.hanning(3), dims=("distance",))
 
     @adapter("dascore.Patch")
-    def scale(patch, factor, note=None):
+    def scale(patch, factor, taper, samples, kind=None):
         """Multiply a patch by a number."""
-        assert note == "why"
+        assert isinstance(taper, xr.DataArray)
+        assert isinstance(samples, np.ndarray)
+        assert kind is dc.Patch
         return patch * factor
 
-    array = convert(dascore_patch, "xarray.DataArray")
-    out = scale(array, 2.0, note="why")
+    out = scale(dascore_patch, 2.0, window, np.arange(3), kind=dc.Patch)
     np.testing.assert_allclose(out.data, dascore_patch.data * 2)
+
+
+def test_adapter_returns_a_class_of_the_target_unchanged(dascore_patch):
+    """A class names a type; it is not an instance of one to convert."""
+
+    @adapter("dascore.Patch")
+    def get_type(patch):
+        """Return the class the target names."""
+        return dc.Patch
+
+    assert get_type(dascore_patch) is dc.Patch
+
+
+def test_segmented_coordinates_reach_destinations_which_cannot_say_runs():
+    """A destination without runs is given the labels, not an empty refusal."""
+    start = np.datetime64("2020-01-01", "ns")
+    step = np.timedelta64(4, "ms")
+    runs = tuple(
+        EvenlySampledCoordinate(
+            step=step,
+            tie_values=(origin, origin + step * 9),
+            tie_indices=(0, 9),
+            dims=("time",),
+        )
+        for origin in (start, start + step * 20)
+    )
+    coord = SegmentedCoordinate(segments=runs, dims=("time",))
+    xdas = pytest.importorskip("xdas")
+    out = coord.to_xdas_coord()
+    assert isinstance(out, xdas.DenseCoordinate)
+    np.testing.assert_array_equal(np.asarray(out.values), coord.get_array())
+    # A rate across a hole is a claim about samples which are not there, so
+    # a target needing one is told why rather than told nothing.
+    with pytest.raises(ValueError, match="not evenly sampled"):
+        coord.get_step()
+
+
+@pytest.mark.parametrize(
+    "coord_kwargs",
+    [
+        # A float range: its step may be a whole number while its labels are
+        # not, so it states no grid of ticks and must not be given one.
+        {"start": 0.5, "step": 2, "shape": (4,)},
+        # A time counted in days rather than nanoseconds.
+        {
+            "start": np.datetime64("2020-01-01", "D"),
+            "step": np.timedelta64(1, "D"),
+            "shape": (4,),
+        },
+        # A duration rather than a date.
+        {
+            "start": np.timedelta64(0, "h"),
+            "step": np.timedelta64(1, "h"),
+            "shape": (4,),
+        },
+    ],
+)
+def test_coordinates_which_state_no_grid(coord_kwargs):
+    """A coordinate not counted in ticks keeps the labels it has."""
+    coord = dc.core.get_coord(**coord_kwargs)
+    patch = dascore_patch_along(coord)
+    array = convert(patch, "xarray.DataArray")
+    np.testing.assert_array_equal(array.coords["time"].values, coord.values)
+    out = convert(array, "dascore.Patch")
+    np.testing.assert_array_equal(out.get_array("time"), coord.values)
+
+
+def test_an_exact_rate_reaches_a_sampled_target_exactly():
+    """A target stating one rate is given the exact one, not the rounded one."""
+    daspy = pytest.importorskip("daspy")
+    coord = dascore_grid(rate=48000, size=4801)
+    patch = dascore_patch_along(coord).transpose("distance", "time")
+    try:
+        array = patch.io.to_xarray(lazy_coords=True)
+    except (AttributeError, TypeError):
+        pytest.skip("This DASCore does not serve lazy xarray indexes.")
+    section = convert(array, "daspy.Section")
+    assert isinstance(section, daspy.Section)
+    # 1/48000 s is 20833.33 ns; the rounded tick reads as 48000.77 Hz.
+    assert section.fs == 48000.0
+    xdas = pytest.importorskip("xdas")
+    out = convert(array, "xdas.DataArray")
+    assert isinstance(out, xdas.DataArray)
+    np.testing.assert_array_equal(np.asarray(out.coords["time"].values), coord.values)
