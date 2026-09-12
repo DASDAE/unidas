@@ -564,6 +564,31 @@ class TestAdapter:
         assert new2.raw_function is my_patch_func.raw_function
         assert new.raw_function is my_patch_func.raw_function
 
+    def test_class_result_is_returned_unchanged(self, dascore_patch):
+        """A function which hands back a class hands back that class."""
+
+        class Marker:
+            """A result which is a class rather than data."""
+
+        @adapter("dascore.Patch")
+        def get_marker(patch):
+            """Return a class."""
+            return Marker
+
+        assert get_marker(dascore_patch) is Marker
+
+    def test_the_wrapped_function_is_left_alone(self, dascore_patch):
+        """Wrapper metadata goes on the wrapper, not on the caller's function."""
+
+        def raw_func(patch):
+            """A dummy patch function."""
+            return patch
+
+        before = set(vars(raw_func))
+        wrapped = adapter("dascore.Patch")(raw_func)
+        assert set(vars(raw_func)) == before
+        assert wrapped.func is wrapped.raw_function is raw_func
+
     def test_different_return_type(self, daspy_section):
         """Ensure wrapped functions that return different types still work."""
 

@@ -4,13 +4,22 @@ import datetime
 import importlib
 import subprocess
 import sys
+from fractions import Fraction
 
 import dascore as dc
 import numpy as np
 import pytest
 import xarray as xr
 
-from unidas import ArrayCoordinate, BaseDAS, EvenlySampledCoordinate, adapter, convert
+from unidas import (
+    ArrayCoordinate,
+    BaseDAS,
+    EvenlySampledCoordinate,
+    SegmentedCoordinate,
+    _base_coord_from,
+    adapter,
+    convert,
+)
 
 
 def assert_round_trip(data_array):
@@ -110,7 +119,10 @@ def test_dascore_examples_to_xarray(example_name):
         else:
             np.testing.assert_allclose(values, patch.get_array(name), equal_nan=True)
         units = str(coord.units) if coord.units is not None else None
-        assert out.coords[name].attrs.get("units") == units
+        # A time states its resolution in its dtype, and xarray spends the
+        # units attribute on saying how to store one.
+        expected = None if values.dtype.kind in "mM" else units
+        assert out.coords[name].attrs.get("units") == expected
 
 
 def test_xdas_scalar_coordinates_and_name(xarray_dataarray):
@@ -522,3 +534,222 @@ def test_dascore_unknown_units_identify_coordinate():
     )
     with pytest.raises(ValueError, match="dascore.*distance"):
         convert(array, "dascore.Patch")
+
+
+def exact_labels(start, rate, count, phase=0, stride=1):
+    """The labels of a grid, quantized with exact arithmetic in the test."""
+    period = Fraction(1_000_000_000, rate)
+    ideal = (Fraction(phase) + index * stride * period for index in range(count))
+    ticks = [int(x) for x in ideal]
+    return np.asarray(start).astype("datetime64[ns]") + np.asarray(
+        ticks, dtype="timedelta64[ns]"
+    )
+
+
+class StubCoordinate:
+    """A provider's coordinate, which unidas reads without knowing its library."""
+
+    data = property(lambda self: pytest.fail("The labels were spelled out."))
+
+    def __init__(self, start, step, size, step_exact=None, offset=0, segments=None):
+        self.start = start
+        self.step = step
+        self.stop = start + step * size
+        self.size = size
+        self.dtype = np.asarray(start).dtype
+        self.units = None
+        self.evenly_sampled = segments is None
+        self.step_exact = step_exact
+        self.step_numerator = None if step_exact is None else step_exact.numerator
+        self.origin_offset = offset
+        self.segments = segments
+
+    def __len__(self):
+        return self.size
+
+
+def test_exact_grid_labels_do_not_drift():
+    """A rate with no whole-tick period is counted from the origin."""
+    start = np.datetime64("2020-01-01", "ns")
+    coord = EvenlySampledCoordinate(
+        step=np.timedelta64(976562, "ns"),
+        tie_values=(start, start + np.timedelta64(976562 * 2047, "ns")),
+        tie_indices=(0, 2047),
+        step_exact=Fraction(1, 1024),
+    )
+    labels = coord.get_array()
+    np.testing.assert_array_equal(labels, exact_labels(start, 1024, 2048))
+    # The rounded step is 976562 ns, so stepping by it loses a microsecond
+    # over this many samples; the exact grid does not.
+    assert labels[-1] != start + np.timedelta64(976562, "ns") * 2047
+
+
+def test_exact_grid_keeps_the_phase_it_was_sliced_at():
+    """A slice of a fractional grid stays on the grid it was cut from."""
+    start = np.datetime64("2020-01-01T00:00:00.006835937", "ns")
+    coord = EvenlySampledCoordinate(
+        step=np.timedelta64(2929686, "ns"),
+        tie_values=(start, start),
+        tie_indices=(0, 330),
+        step_exact=Fraction(3, 1024),
+        origin_offset=Fraction(1, 2_000_000_000),
+    )
+    expected = exact_labels(start, 1024, 331, phase=Fraction(1, 2), stride=3)
+    np.testing.assert_array_equal(coord.get_array(), expected)
+
+
+def test_segmented_coordinate_states_its_runs():
+    """A coordinate with a hole keeps the runs on either side of it."""
+    start = np.datetime64("2020-01-01", "ns")
+    step = np.timedelta64(4, "ms")
+    runs = tuple(
+        EvenlySampledCoordinate(
+            step=step,
+            tie_values=(origin, origin + step * 9),
+            tie_indices=(0, 9),
+        )
+        for origin in (start, start + step * 20)
+    )
+    coord = SegmentedCoordinate(segments=runs, dims=("time",))
+    assert len(coord) == 20
+    expected = np.concatenate([x.get_array() for x in runs])
+    np.testing.assert_array_equal(coord.get_array(), expected)
+    variable = coord.to_xarray_coord()
+    np.testing.assert_array_equal(variable.values, expected)
+
+
+def test_extraction_reads_structure_not_labels():
+    """A compact coordinate is read from what it states, not from its values."""
+    start = np.datetime64("2020-01-01", "ns")
+    grid = StubCoordinate(start, np.timedelta64(976562, "ns"), 8, Fraction(1, 1024))
+    out = _base_coord_from(grid, ("time",))
+    assert isinstance(out, EvenlySampledCoordinate)
+    assert out.step_exact == Fraction(1, 1024)
+    np.testing.assert_array_equal(out.get_array(), exact_labels(start, 1024, 8))
+    runs = StubCoordinate(start, np.timedelta64(4, "ms"), 8, segments=(grid, grid))
+    segmented = _base_coord_from(runs, ("time",))
+    assert isinstance(segmented, SegmentedCoordinate)
+    assert len(segmented.segments) == 2
+
+
+def test_time_coordinates_state_no_units_attribute():
+    """Xarray reserves a time's units attribute for how it is stored."""
+    start = np.datetime64("2020-01-01", "ns")
+    coord = ArrayCoordinate(
+        data=start + np.arange(3) * np.timedelta64(4, "ms"),
+        units="1 s",
+        dims=("time",),
+    )
+    assert "units" not in coord.to_xarray_coord().attrs
+    # Writing one raises when xarray encodes the variable for storage.
+    array = xr.DataArray(coord.get_array(), dims=("time",))
+    array.attrs["units"] = "1 s"
+    with pytest.raises(ValueError, match="already exists in attrs"):
+        xr.Dataset({"time": array}).to_netcdf()
+
+
+def dascore_grid(rate=1024, size=2048):
+    """A DASCore grid stating a rate with no whole-tick period, or skip."""
+    start = dc.to_datetime64("2020-01-01")
+    try:
+        coord = dc.core.get_coord(start=start, step=Fraction(1, rate), shape=(size,))
+    except (TypeError, ValueError):
+        coord = None
+    if getattr(coord, "step_exact", None) != Fraction(1, rate):
+        pytest.skip("This DASCore does not state exact coordinate grids.")
+    return coord
+
+
+def dascore_patch_along(coord):
+    """A DASCore patch whose time coordinate is the one given."""
+    coords = {"distance": np.arange(3), "time": coord}
+    data = np.zeros((3, len(coord)))
+    return dc.Patch(data=data, dims=("distance", "time"), coords=coords)
+
+
+@pytest.mark.parametrize(
+    "index", [slice(None), slice(7, 1000, 3), slice(None, None, -1)]
+)
+def test_dascore_exact_grid_round_trip(index):
+    """A fractional rate returns as the grid it was, phase included."""
+    coord = dascore_grid()[index]
+    base = convert(dascore_patch_along(coord), "unidas.BaseDAS")
+    assert convert(base, "dascore.Patch").get_coord("time") == coord
+    # A destination without exact grids still receives exact labels.
+    np.testing.assert_array_equal(base.coords["time"].get_array(), coord.values)
+
+
+def test_dascore_segmented_round_trip():
+    """A gap in a DASCore coordinate is carried across as a gap."""
+    step, start = dc.to_timedelta64(0.004), dc.to_datetime64("2020-01-01")
+    first = dc.core.get_coord(start=start, step=step, shape=(100,))
+    second = dc.core.get_coord(start=first.max() + 10 * step, step=step, shape=(50,))
+    concat = getattr(dc.core.coords, "concat_coords", None)
+    coord = None if concat is None else concat(first, second)
+    if getattr(coord, "segments", None) is None:
+        pytest.skip("This DASCore does not state coordinate runs.")
+    base = convert(dascore_patch_along(coord), "unidas.BaseDAS")
+    assert isinstance(base.coords["time"], SegmentedCoordinate)
+    assert convert(base, "dascore.Patch").get_coord("time") == coord
+
+
+def test_dascore_lazy_index_is_read_from_its_coordinate():
+    """A lazy index states its coordinate, and is read from that."""
+    coord = dascore_grid()
+    patch = dascore_patch_along(coord)
+    try:
+        array = patch.io.to_xarray(lazy_coords=True)
+    except (AttributeError, TypeError):
+        pytest.skip("This DASCore does not serve lazy xarray indexes.")
+    if getattr(array.xindexes.get("time"), "coordinate", None) is None:
+        pytest.skip("This DASCore does not serve lazy xarray indexes.")
+    out = convert(array, "dascore.Patch").get_coord("time")
+    assert out == coord
+
+
+def test_null_patch_attributes_are_omitted(dascore_patch):
+    """An attribute holding nothing says nothing, and some stores refuse it."""
+    null = [i for i, v in dict(dascore_patch.attrs).items() if v is None]
+    assert null, "The patch fixture states no null attribute to drop."
+    array = convert(dascore_patch, "xarray.DataArray")
+    assert not [i for i, v in array.attrs.items() if v is None]
+
+
+def test_unlabeled_dimension_stays_unlabeled():
+    """A dimension DASCore only knows the length of gains no null labels."""
+    patch = dc.Patch(
+        data=np.zeros((3, 4)),
+        dims=("distance", "time"),
+        coords={"distance": np.arange(3)},
+    )
+    array = convert(patch, "xarray.DataArray")
+    assert "time" not in array.coords
+    assert convert(array, "dascore.Patch").dims == patch.dims
+
+
+def test_adapter_converts_every_operand(dascore_patch):
+    """A function of two patches takes two of whatever the caller holds."""
+
+    @adapter("dascore.Patch")
+    def add(patch, other):
+        """Add two patches."""
+        return patch + other
+
+    array = convert(dascore_patch, "xarray.DataArray")
+    for out in (add(array, array), add(array, other=array)):
+        assert isinstance(out, xr.DataArray)
+        np.testing.assert_allclose(out.data, dascore_patch.data * 2)
+
+
+def test_adapter_passes_other_arguments_through(dascore_patch):
+    """Scalars and options are not data, and are handed over as they are."""
+
+    @adapter("dascore.Patch")
+    def scale(patch, factor, note=None):
+        """Multiply a patch by a number."""
+        assert note == "why"
+        return patch * factor
+
+    array = convert(dascore_patch, "xarray.DataArray")
+    out = scale(array, 2.0, note="why")
+    np.testing.assert_allclose(out.data, dascore_patch.data * 2)

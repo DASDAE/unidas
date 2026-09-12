@@ -11,6 +11,7 @@ import zoneinfo
 from collections import defaultdict, deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from fractions import Fraction
 from functools import cache, wraps
 from types import ModuleType
 from typing import Any, ClassVar, Protocol, TypeVar, runtime_checkable
@@ -22,7 +23,7 @@ __all__ = ("adapter", "convert")
 
 # Keep the version hardcoded so vendored copies report their own version
 # without requiring installed package metadata.
-__version__ = "0.1.2"
+__version__ = "0.2.0"
 
 # Define the urls to each project to provide helpful error messages.
 PROJECT_URLS = {
@@ -182,9 +183,13 @@ class Coordinate(ArrayLike):
         """Convert to an xarray coordinate variable."""
         xr = optional_import("xarray")
         attrs = dict(self.attrs)
-        if self.units is not None:
+        array = self.get_array()
+        # A datetime or duration states its resolution in its own dtype, and
+        # xarray spends the units attribute on saying how to store one, so
+        # writing a physical unit there would be read back as an encoding.
+        if self.units is not None and np.asarray(array).dtype.kind not in "mM":
             attrs["units"] = self.units
-        return xr.Variable(self.dims, self.get_array(), attrs=attrs)
+        return xr.Variable(self.dims, array, attrs=attrs)
 
     def get_array(self):
         """Return the coordinate values as an array."""
@@ -218,6 +223,15 @@ class EvenlySampledCoordinate(Coordinate):
         The dimensions with which the coordinate is associated.
     attrs
         Coordinate metadata other than units.
+    step_exact
+        The exact spacing, as a fraction of the coordinate's own units
+        (seconds for times), when ``step`` is a rounded view of it. A rate
+        such as 1024 Hz has no whole-nanosecond period, so stepping by the
+        rounded value drifts. None when the spacing has no exact form.
+    origin_offset
+        How far the grid's ideal origin sits past the first label, in the
+        same units as ``step_exact``. A slice of a fractional grid keeps the
+        phase it was cut at; without it the samples move onto another grid.
     """
 
     step: Any
@@ -226,11 +240,27 @@ class EvenlySampledCoordinate(Coordinate):
     units: Any = None
     dims: tuple[str, ...] = ()
     attrs: dict[str, Any] = field(default_factory=dict)
+    step_exact: Fraction | None = None
+    origin_offset: Fraction | None = None
 
     @property
     def shape(self):
         """Return the coordinate shape without expanding its values."""
         return (len(self),)
+
+    def _grid_ticks(self):
+        """The exact grid as (numerator, denominator, offset) whole ticks."""
+        dtype = np.asarray(self.get_start()).dtype
+        # A time counts the ticks its dtype states; anything else its own units.
+        one = np.timedelta64(1, "s")
+        per_unit = (
+            int(one // np.timedelta64(1, np.datetime_data(dtype)[0]))
+            if dtype.kind in "mM"
+            else 1
+        )
+        ratio = self.step_exact * per_unit
+        offset = (self.origin_offset or 0) * per_unit * ratio.denominator
+        return ratio.numerator, ratio.denominator, int(offset)
 
     def get_array(self):
         """Expand sampled coordinates, keeping datetime arithmetic exact."""
@@ -239,6 +269,13 @@ class EvenlySampledCoordinate(Coordinate):
         start, step = self.get_start(), self.step
         if isinstance(start, datetime.datetime):
             start = np.datetime64(to_stripped_utc(time_to_datetime(start)))
+        if self.step_exact is not None:
+            # Count exact ticks from the origin: adding a rounded step 'size'
+            # times accumulates its rounding error into the later labels.
+            num, den, offset = self._grid_ticks()
+            ticks = (offset + np.arange(len(self), dtype=np.int64) * num) // den
+            base = np.asarray(start)
+            return (base.astype("int64") + ticks).astype(base.dtype)
         if len(self) == 1:
             return np.asarray([start])
         if isinstance(start, np.datetime64 | np.timedelta64) and not isinstance(
@@ -260,6 +297,20 @@ class EvenlySampledCoordinate(Coordinate):
             raise NotImplementedError(msg)
 
         start, stop, step = self.tie_values[0], self.tie_values[-1], self.step
+
+        if self.step_exact is not None:
+            # State the grid itself rather than its rounded endpoints, which
+            # is the only way a fractional rate survives with its phase.
+            num, den, offset = self._grid_ticks()
+            return dc_core.get_coord(
+                start=start,
+                step=self.step_exact,
+                shape=(len(self),),
+                step_numerator=num,
+                step_denominator=den,
+                origin_offset=offset,
+                units=self.units,
+            )
 
         if isinstance(start, datetime.datetime):
             start = dc.to_datetime64(start)
@@ -395,6 +446,103 @@ class ArrayCoordinate(Coordinate):
 
     def __len__(self):
         return len(self.data)
+
+
+@dataclass
+class SegmentedCoordinate(Coordinate):
+    """
+    A coordinate made of runs of samples separated by gaps.
+
+    Each run states its own sampling; the gaps between them are holes in the
+    coordinate, not samples to be interpolated over. A destination which
+    cannot say that must not receive one silently.
+
+    Parameters
+    ----------
+    segments
+        The runs, in order.
+    units
+        The units of the coordinate.
+    dims
+        The dimensions with which the coordinate is associated.
+    attrs
+        Coordinate metadata other than units.
+    """
+
+    segments: tuple[Coordinate, ...]
+    units: Any = None
+    dims: tuple[str, ...] = ()
+    attrs: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def shape(self):
+        """Return the coordinate shape without expanding its values."""
+        return (len(self),)
+
+    def __len__(self):
+        return sum(len(x) for x in self.segments)
+
+    def get_array(self):
+        """Expand every run, in order."""
+        return np.concatenate([np.asarray(x.get_array()) for x in self.segments])
+
+    def get_start(self):
+        """Return the first coordinate value."""
+        return self.segments[0].get_start()
+
+    def to_dascore_coord(self):
+        """Convert to a dascore coordinate."""
+        dc_core = optional_import("dascore.core")
+        runs = [x.to_dascore_coord() for x in self.segments]
+        return dc_core.get_coord(segments=runs, units=self.units)
+
+
+def _base_coord_from(coord, dims, units=None, attrs=None):
+    """
+    Extract a coordinate from a provider's own compact representation.
+
+    The coordinate is read structurally -- its runs, its exact grid, its
+    sampling -- rather than through its values, so a range describing a long
+    acquisition crosses without every label being spelled out. Anything not
+    recognized falls back to the values it states.
+
+    Parameters
+    ----------
+    coord
+        The provider's coordinate.
+    dims
+        The dimensions the coordinate is associated with.
+    units
+        The units, when the provider states them beside the coordinate.
+    attrs
+        Coordinate metadata other than units.
+    """
+    if units is None and getattr(coord, "units", None) is not None:
+        units = str(coord.units)
+    shared = {"units": units, "dims": tuple(dims), "attrs": dict(attrs or {})}
+    if (segments := getattr(coord, "segments", None)) is not None:
+        runs = tuple(_base_coord_from(x, dims) for x in segments)
+        return SegmentedCoordinate(segments=runs, **shared)
+    if getattr(coord, "evenly_sampled", False):
+        # The phase is stored in ticks of the grid's own denominator. Stated
+        # as a share of one step it needs no knowledge of the tick size.
+        exact = getattr(coord, "step_exact", None)
+        numerator = getattr(coord, "step_numerator", None)
+        offset = getattr(coord, "origin_offset", None) or 0
+        start = coord.start
+        if exact is not None:
+            # An exact grid counts ticks of the coordinate's resolution, which
+            # a label need not state on its own: midnight reads as a whole day.
+            start = np.asarray(start).astype(coord.dtype)[()]
+        return EvenlySampledCoordinate(
+            step=coord.step,
+            tie_values=(start, coord.stop - coord.step),
+            tie_indices=(0, len(coord) - 1),
+            step_exact=exact,
+            origin_offset=Fraction(offset) * exact / numerator if numerator else None,
+            **shared,
+        )
+    return ArrayCoordinate(data=coord.data, **shared)
 
 
 @dataclass()
@@ -690,37 +838,25 @@ class DASCorePatchConverter(Converter):
     # axis, so it must not be dumped into the attrs dict.
     _structural_attrs = frozenset({"coords", "dims"})
 
-    def _to_base_coords(self, coord, dims):
-        """Convert a coordinate to base coordinates."""
-        # Portable unit strings also keep xarray attrs serializable. DASCore
-        # parses these back to quantities, including any unit scale.
-        units = str(coord.units) if coord.units is not None else None
-        if coord.evenly_sampled:
-            tie_inds = (0, len(coord) - 1)
-            tie_vals = (coord.start, coord.stop - coord.step)
-            return EvenlySampledCoordinate(
-                tie_values=tie_vals,
-                tie_indices=tie_inds,
-                units=units,
-                dims=dims,
-                step=coord.step,
-            )
-        else:
-            return ArrayCoordinate(data=coord.data, units=units, dims=dims)
-
     @converts_to("unidas.BaseDAS")
     def to_base(self, patch) -> BaseDAS:
         """Convert dascore patch to base representation."""
         coords = patch.coords
         base_coords = {
-            i: self._to_base_coords(v, dims=coords.dim_map[i])
-            for i, v in patch.coords.coord_map.items()
+            i: _base_coord_from(v, coords.dim_map[i])
+            for i, v in coords.coord_map.items()
+            # A coordinate stating only its shape has no labels to carry, so
+            # its dimension stays unlabeled rather than gaining null ones.
+            if not getattr(v, "_partial", False)
         }
+        attrs = patch.attrs.model_dump(exclude=self._structural_attrs)
         out = {
             "data": patch.data,
             "dims": patch.dims,
             "coords": base_coords,
-            "attrs": patch.attrs.model_dump(exclude=self._structural_attrs),
+            # An attr holding nothing says nothing, and a destination which
+            # stores its attributes may refuse the null outright.
+            "attrs": {i: v for i, v in attrs.items() if v is not None},
         }
         return BaseDAS(**out)
 
@@ -884,9 +1020,16 @@ class XArrayConverter(Converter):
         coords = {}
         for name, coord in data_array.coords.items():
             attrs = dict(coord.attrs)
+            # A stated null unit is metadata of its own, and stays put.
             units = attrs.get("units")
             if units is not None:
                 attrs.pop("units")
+            # An index which states its own coordinate is read from that
+            # rather than from the labels it would have to compute first.
+            source = getattr(data_array.xindexes.get(name), "coordinate", None)
+            if source is not None:
+                coords[name] = _base_coord_from(source, coord.dims, units, attrs)
+                continue
             coords[name] = ArrayCoordinate(
                 data=coord.data,
                 dims=coord.dims,
@@ -900,6 +1043,12 @@ class XArrayConverter(Converter):
             attrs=dict(data_array.attrs),
             name=data_array.name,
         )
+
+
+def _convert_operand(obj, to: str):
+    """Convert an operand unidas knows how to convert; leave anything else."""
+    cls = obj if inspect.isclass(obj) else type(obj)
+    return convert(obj, to) if get_class_key(cls) in Converter._registry else obj
 
 
 def adapter(to: str):
@@ -939,12 +1088,19 @@ def adapter(to: str):
             key = get_class_key(cls)
             conversion_class: Converter = Converter._registry[key]
             input_obj = convert(obj, to)
+            # The other operands are data too: a function of two sections
+            # takes two of whatever the caller holds. Everything else --
+            # scalars, arrays, options -- is passed along untouched.
+            args = tuple(_convert_operand(x, to) for x in args)
+            kwargs = {i: _convert_operand(v, to) for i, v in kwargs.items()}
             func_out = func(input_obj, *args, **kwargs)
-            cls_out = obj if inspect.isclass(func_out) else type(func_out)
+            cls_out = func_out if inspect.isclass(func_out) else type(func_out)
             # Sometimes a function can return a different type than its input
             # e.g., a dataframe. In this case just return output.
             if get_class_key(cls_out) != to:
                 return func_out
+            # The first argument says which library the caller works in, so
+            # that is the one the result is returned in.
             output_obj = convert(func_out, key)
             # Apply class specific logic to compensate for lossy conversion.
             out = conversion_class.post_conversion(input_obj, output_obj)
@@ -952,9 +1108,9 @@ def adapter(to: str):
 
         # Following the convention of pydantic, we attach the raw function
         # in case it needs to be accessed later. Also ensures to keep the
-        # original function if it is already wrapped.
-        func.func = getattr(func, "raw_function", func)
-        _decorator.raw_function = getattr(func, "raw_function", func)
+        # original function if it is already wrapped. It goes on the wrapper;
+        # the function handed in belongs to the caller.
+        _decorator.func = _decorator.raw_function = getattr(func, "raw_function", func)
         # Also attach a private flag indicating the function has already
         # been wrapped. We don't want to allow this more than once.
         _decorator._unidas_to = to

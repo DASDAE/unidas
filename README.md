@@ -37,6 +37,8 @@ out = daspy_function(patch)
 assert isinstance(out, dc.Patch)
 ```
 
+The wrapped function is called with the library it was written for, whichever library the caller works in, and its result comes back in the caller's. Every data object among the top-level arguments is converted, so a function of two sections takes two of whatever the caller holds; scalars, arrays, and options are passed through untouched, as is a result which is not one of the supported data structures.
+
 You can also use `adapter` to wrap un-wrapped functions. 
 
 ```python
@@ -155,7 +157,9 @@ Feel free to open a discussion if you need help.
 
 DASPy sections and Lightguide blasts require `time` and `distance` coordinates, evenly sampled coordinates, and an absolute datetime time coordinate. Objects with relative, numeric, or uneven time/distance coordinates may still convert to other formats, but will raise a `ValueError` when converting to `daspy.Section` or `lightguide.Blast`.
 
-Xarray conversion through unidas' internal representation preserves the array name, data, dimension order, coordinates (including scalar and multidimensional auxiliary coordinates), attributes, and coordinate metadata such as units. On this internal round-trip, dimensions without coordinate labels remain unlabeled. DASCore may replace missing labels with placeholder coordinates. Other formats retain only the structures and metadata they support; unsupported coordinate layouts raise an error identifying the target and coordinate. For example, XDAS supports scalar coordinates but does not support multidimensional coordinates. Some DASCore versions cannot construct scalar or multidimensional coordinates. DASCore coordinate units become portable strings in xarray attributes.
+Xarray conversion through unidas' internal representation preserves the array name, data, dimension order, coordinates (including scalar and multidimensional auxiliary coordinates), attributes, and coordinate metadata such as units. On this internal round-trip, dimensions without coordinate labels remain unlabeled, and attributes holding nothing are left out. DASCore states such a dimension as a coordinate holding only its length, which is exported as no coordinate at all rather than as null labels. Other formats retain only the structures and metadata they support; unsupported coordinate layouts raise an error identifying the target and coordinate. For example, XDAS supports scalar coordinates but does not support multidimensional coordinates. Some DASCore versions cannot construct scalar or multidimensional coordinates. DASCore coordinate units become portable strings in xarray attributes. A datetime or duration states its resolution in its own dtype, so no physical unit is written beside it; xarray reserves that attribute for saying how such a coordinate is stored.
+
+A coordinate is read from what it states rather than from its labels, so a range describing a long acquisition crosses without every label being computed. Two things survive that ordinary sampling cannot describe. A rate whose period is not a whole number of ticks, such as 1024 Hz, keeps its exact spacing and the phase it was sliced at, so its labels do not drift; a coordinate whose samples come in runs separated by gaps keeps those runs, rather than being filled in or read as one uninterrupted range. A destination which cannot say either of those receives the exact labels instead. Both need a source which states them: DASCore does so from the release which introduced exact grids and coordinate runs, and unidas falls back to labels for versions which do not.
 
 DASPy sampling fields are derived from coordinates and take precedence over conflicting attributes such as `fs` or `dx`. Lightguide represents distance using integer channel indices and rounds the starting distance to the nearest channel when it is not an integer multiple of the spacing.
 
