@@ -586,16 +586,17 @@ class StubIndex(xr.Index):
     @classmethod
     def from_variables(cls, variables, *, options):
         """Build the index from the variables it is set on."""
-        (name,) = variables
-        size = variables[name].size
-        start = np.datetime64("2020-01-01", "ns")
-        step = np.timedelta64(976562, "ns")
-        coordinate = StubCoordinate(start, step, size, grid=(1953125, 2, 0))
-        return cls(coordinate, dict(variables))
+        return cls(options["coordinate"], dict(variables))
 
     def create_variables(self, variables=None):
         """Return the variables this index stands for."""
         return self._variables
+
+
+def indexed_by(coordinate, labels, name="time"):
+    """A DataArray whose index states the coordinate given."""
+    array = xr.DataArray(np.zeros(len(labels)), dims=(name,), coords={name: labels})
+    return array.drop_indexes(name).set_xindex(name, StubIndex, coordinate=coordinate)
 
 
 def test_exact_grid_labels_do_not_drift():
@@ -703,13 +704,98 @@ def test_an_index_is_read_from_the_coordinate_it_states():
     """A lazy index hands over its coordinate instead of its labels."""
     start = np.datetime64("2020-01-01", "ns")
     labels = exact_labels(start, 1024, 6)
-    array = xr.DataArray(np.zeros(6), dims=("time",), coords={"time": labels})
-    array = array.drop_indexes("time").set_xindex("time", StubIndex)
-    base = convert(array, "unidas.BaseDAS")
+    stub = StubCoordinate(start, np.timedelta64(976562, "ns"), 6, grid=(1953125, 2, 0))
+    base = convert(indexed_by(stub, labels), "unidas.BaseDAS")
     coord = base.coords["time"]
     assert isinstance(coord, EvenlySampledCoordinate)
     assert coord.exact_grid == (1953125, 2, 0)
     np.testing.assert_array_equal(coord.get_array(), labels)
+
+
+@pytest.mark.parametrize("kind", ["ordinary sampling", "no sampling at all"])
+def test_an_index_stating_nothing_new_keeps_its_labels(kind):
+    """Labels are only given up for what they cannot say themselves."""
+    # Float labels are not ticks of anything, so a range over them describes
+    # them less exactly than they describe themselves, float32 above all.
+    labels = np.float32(0.5) + np.arange(5, dtype=np.float32) * np.float32(0.1)
+    coordinate = (
+        StubCoordinate(labels[0], np.float32(0.1), 5)
+        if kind == "ordinary sampling"
+        else labels
+    )
+    base = convert(indexed_by(coordinate, labels, "distance"), "unidas.BaseDAS")
+    out = base.coords["distance"].get_array()
+    assert out.dtype == labels.dtype
+    np.testing.assert_array_equal(out, labels)
+
+
+def test_a_tick_is_as_long_as_its_dtype_says():
+    """A resolution states a unit and how many of them one tick is."""
+    start = np.zeros(1, dtype="datetime64[10us]")[0]
+    coord = EvenlySampledCoordinate(
+        step=np.timedelta64(2, "us"),
+        tie_values=(start, start),
+        tie_indices=(0, 5),
+        step_numerator=5,
+        step_denominator=2,
+        origin_offset=0,
+    )
+    # Five halves of a ten-microsecond tick is 25 us, which is 40 kHz.
+    assert 1 / coord.get_step() == 40000
+    # A week is not one fixed length, so no exact spacing is claimed for it.
+    week = np.zeros(1, dtype="datetime64[W]")[0]
+    weekly = EvenlySampledCoordinate(
+        step=np.timedelta64(1, "W"),
+        tie_values=(week, week),
+        tie_indices=(0, 5),
+        step_numerator=5,
+        step_denominator=2,
+        origin_offset=0,
+    )
+    assert weekly.get_step() == np.timedelta64(1, "W")
+
+
+def test_an_exactly_representable_rate_stays_exact():
+    """A period is divided while it is still rational."""
+    start = np.datetime64("2020-01-01", "ns")
+    coord = EvenlySampledCoordinate(
+        step=np.timedelta64(20408163, "ns"),
+        tie_values=(start, start),
+        tie_indices=(0, 97),
+        step_numerator=1_000_000_000,
+        step_denominator=49,
+        origin_offset=0,
+    )
+    # 1/49 s is 20408163.27 ns; through a float period the rate reads as
+    # 49.00000000000001, which will not join a recording made at 49.
+    assert float(1 / coord.get_step()) == 49.0
+
+
+def test_a_grid_of_other_ticks_travels_as_its_labels():
+    """DASCore counts a time in nanoseconds; another grid is not read as one."""
+    start = np.datetime64("2020-01-01", "us")
+    labels = start + np.asarray([0, 2, 5, 7, 10, 12], dtype="timedelta64[us]")
+    stub = StubCoordinate(start, np.timedelta64(2, "us"), 6, grid=(5, 2, 0))
+    base = convert(indexed_by(stub, labels), "unidas.BaseDAS")
+    coord = base.coords["time"]
+    np.testing.assert_array_equal(coord.get_array(), labels)
+    np.testing.assert_array_equal(coord.to_dascore_coord().values, labels)
+
+
+def test_a_lazy_coordinate_is_not_computed_to_be_described():
+    """Asking what a coordinate is must not spell out what it holds."""
+    da = pytest.importorskip("dask.array")
+    from dask import delayed
+
+    @delayed
+    def fail_if_computed():
+        raise AssertionError("Conversion computed the labels")
+
+    labels = da.from_delayed(fail_if_computed(), shape=(3,), dtype=float)
+    coord = ArrayCoordinate(data=labels, units="1 m", dims=("distance",))
+    # Its units are written beside it because it is not a time, which is a
+    # question about the labels' type, not about the labels.
+    assert coord.to_xarray_coord().attrs["units"] == "1 m"
 
 
 def test_time_coordinates_state_no_units_attribute():

@@ -37,6 +37,21 @@ PROJECT_URLS = {
 # A generic type variable.
 T = TypeVar("T")
 
+# How long one of each numpy time unit is, in seconds. Weeks, months and
+# years are missing because they are not one fixed length.
+TICK_SECONDS = {
+    "D": Fraction(86400),
+    "h": Fraction(3600),
+    "m": Fraction(60),
+    "s": Fraction(1),
+    "ms": Fraction(1, 10**3),
+    "us": Fraction(1, 10**6),
+    "ns": Fraction(1, 10**9),
+    "ps": Fraction(1, 10**12),
+    "fs": Fraction(1, 10**15),
+    "as": Fraction(1, 10**18),
+}
+
 # ------------------------ Utility functions
 
 
@@ -187,7 +202,11 @@ class Coordinate(ArrayLike):
         # A datetime or duration states its resolution in its own dtype, and
         # xarray spends the units attribute on saying how to store one, so
         # writing a physical unit there would be read back as an encoding.
-        if self.units is not None and np.asarray(array).dtype.kind not in "mM":
+        # Asked of the array rather than of a copy of it, which for a lazy
+        # coordinate would be its labels computed to answer a question
+        # about their type.
+        kind = getattr(array, "dtype", None) or np.asarray(array).dtype
+        if self.units is not None and kind.kind not in "mM":
             attrs["units"] = self.units
         return xr.Variable(self.dims, array, attrs=attrs)
 
@@ -256,20 +275,25 @@ class EvenlySampledCoordinate(Coordinate):
             return None
         return self.step_numerator, self.step_denominator or 1, self.origin_offset or 0
 
+    def _tick_seconds(self):
+        """How long one of this coordinate's ticks is, in seconds, or None."""
+        dtype = np.asarray(self.get_start()).dtype
+        if dtype.kind not in "mM":
+            return Fraction(1)  # an ordinary number counts its own units.
+        # A dtype states its unit and how many of them one tick is, and both
+        # answer the question: datetime64[10us] counts ten microseconds.
+        unit, count = np.datetime_data(dtype)
+        seconds = TICK_SECONDS.get(unit)
+        return None if seconds is None else seconds * count
+
     def _exact_step(self):
         """The exact spacing in the coordinate's units, or None."""
         if (grid := self.exact_grid) is None:
             return None
         num, den, _ = grid
-        if den == 1:
+        seconds = self._tick_seconds()
+        if den == 1 or seconds is None:
             return None  # the stored step already states this one exactly.
-        tick = np.asarray(self.get_start()).dtype
-        if tick.kind not in "mM":
-            return Fraction(num, den)
-        # A tick is a second's own fraction, which for a coarse unit is
-        # larger than a second; both directions must stay exact.
-        unit = np.timedelta64(1, np.datetime_data(tick)[0])
-        seconds = Fraction(int(unit.astype("timedelta64[ns]").astype("int64")), 10**9)
         return Fraction(num, den) * seconds
 
     def get_array(self):
@@ -309,9 +333,14 @@ class EvenlySampledCoordinate(Coordinate):
         start, stop, step = self.tie_values[0], self.tie_values[-1], self.step
 
         if self.exact_grid is not None:
+            num, den, offset = self.exact_grid
+            # DASCore counts a time's ticks in nanoseconds. A grid counted in
+            # anything else would be read as though it were, so that one
+            # travels as the labels it has rather than as a grid it has not.
+            if self._tick_seconds() not in (Fraction(1), TICK_SECONDS["ns"]):
+                return dc_core.get_coord(data=self.get_array(), units=self.units)
             # State the grid itself rather than its rounded endpoints, which
             # is the only way a fractional rate survives with its phase.
-            num, den, offset = self.exact_grid
             return dc_core.get_coord(
                 start=start,
                 step=self.step,
@@ -362,7 +391,9 @@ class EvenlySampledCoordinate(Coordinate):
         exact = self._exact_step()
         # A consumer wanting a rate divides by this, so a rounded tick is a
         # rounded rate: 1/48000 s stored as 20833 ns reads as 48000.77 Hz.
-        return self.step if exact is None else float(exact)
+        # It stays rational until the division is done, so a rate which a
+        # float can state exactly is stated exactly.
+        return self.step if exact is None else exact
 
     def get_start(self):
         """Return the first coordinate value."""
@@ -530,6 +561,20 @@ class SegmentedCoordinate(Coordinate):
 # What a coordinate must state before its sampling is read instead of its
 # labels. A provider stating only some of it is not describing a grid.
 _SAMPLED_FIELDS = ("start", "stop", "step", "dtype")
+
+
+def _states_more_than_labels(coord) -> bool:
+    """Whether a coordinate describes what its labels alone cannot."""
+    if coord is None:
+        return False
+    if getattr(coord, "segments", None) is not None:
+        return True
+    return getattr(coord, "step_numerator", None) is not None
+
+
+def _as_number(value):
+    """A rational spacing as the number a destination stores; else unchanged."""
+    return float(value) if isinstance(value, Fraction) else value
 
 
 def _base_coord_from(coord, dims, units=None, attrs=None):
@@ -837,8 +882,11 @@ class UnidasBaseDASConverter(Converter):
         kwargs = dict(base_das.attrs)
         kwargs.update(
             data=base_das.transpose("distance", "time").data,
-            fs=1 / time_to_float(time_step),
-            dx=distance_step,
+            # Divided before it becomes a float, so a rate which is exactly
+            # representable stays exact: 1/49 s as a float reads as 49.000000001
+            # Hz, which will not join a section recorded at 49.
+            fs=_as_number(1 / time_to_float(time_step)),
+            dx=_as_number(distance_step),
             start_distance=distance_start,
             start_time=dasdt.from_datetime(start_time),
         )
@@ -856,9 +904,9 @@ class UnidasBaseDASConverter(Converter):
         out = lg_blast.Blast(
             data=base_das.transpose("distance", "time").data,
             start_time=time_to_datetime(time_start),
-            sampling_rate=1 / time_to_float(time_step),
+            sampling_rate=_as_number(1 / time_to_float(time_step)),
             start_channel=start_channel,
-            channel_spacing=distance_step,
+            channel_spacing=_as_number(distance_step),
         )
         return out
 
@@ -1061,10 +1109,12 @@ class XArrayConverter(Converter):
             units = attrs.get("units")
             if units is not None:
                 attrs.pop("units")
-            # An index which states its own coordinate is read from that
-            # rather than from the labels it would have to compute first.
+            # An index which states a coordinate the labels cannot describe
+            # -- runs with gaps between them, or a grid of exact ticks -- is
+            # read from that, and computes no labels to be read from. One
+            # saying anything else has labels which say it as well.
             source = getattr(data_array.xindexes.get(name), "coordinate", None)
-            if source is not None:
+            if _states_more_than_labels(source):
                 coords[name] = _base_coord_from(source, coord.dims, units, attrs)
                 continue
             coords[name] = ArrayCoordinate(
