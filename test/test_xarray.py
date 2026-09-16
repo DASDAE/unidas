@@ -1084,6 +1084,8 @@ def test_xdas_states_a_sampling_ratio_which_seeds_a_grid():
     step = np.timedelta64(4, "ms")
     # A lone sample states no spacing between tie points; the ratio does.
     lonely = xdas.InterpCoordinate.from_block(start, 1, step, dim="time")
+    if "sampling_numerator" not in lonely.data:
+        pytest.skip("This xdas states no sampling ratio beside its tie points.")
     out = convert(
         xdas.DataArray(np.zeros(1), coords={"time": lonely}), "unidas.BaseDAS"
     ).coords["time"]
