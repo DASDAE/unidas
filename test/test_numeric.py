@@ -1380,6 +1380,22 @@ GOLDEN_RUN_HASHES = {
 }
 
 
+class TestPlatformIntegers:
+    """Python integers count in int64 on every platform."""
+
+    def test_python_integers_are_int64(self):
+        """A run or labels given as Python ints state int64, as on Linux."""
+        assert NumericND.from_run(3, 2, 10).dtype == np.dtype("int64")
+        assert NumericND.from_array([1, 2, 4]).dtype == np.dtype("int64")
+        assert NumericND.from_array([1, 2, 4]).values.dtype == np.dtype("int64")
+
+    def test_a_narrow_integer_array_keeps_its_dtype(self):
+        """An array which states int32 stays int32."""
+        narrow = np.array([1, 2, 4], dtype="int32")
+        assert NumericND.from_array(narrow).dtype == np.dtype("int32")
+        assert NumericND.from_run(np.int32(3), 2, 10).dtype == np.dtype("int32")
+
+
 def build_tables(cls, join):
     """
     The coordinates the golden vectors were generated from.

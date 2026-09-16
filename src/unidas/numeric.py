@@ -372,8 +372,17 @@ def coord_dtype(dtype) -> np.dtype:
 
 
 def _as_dtype(value) -> np.dtype:
-    """The coordinate dtype a scalar or array implies."""
-    return coord_dtype(np.asarray(value).dtype)
+    """
+    The coordinate dtype a scalar or array implies.
+
+    A numpy array or scalar keeps its own dtype. Python integers, alone or
+    in a sequence, count in int64 whatever the platform's default integer
+    is, so a table built from them is the same table on every platform.
+    """
+    array = np.asarray(value)
+    if array.dtype.kind in "iu" and not isinstance(value, np.ndarray | np.generic):
+        return np.dtype("int64")
+    return coord_dtype(array.dtype)
 
 
 def _check_numeric(dtype) -> np.dtype:
@@ -421,7 +430,7 @@ def _check_unsigned(values, dtype) -> None:
 def _as_coord_values(values) -> np.ndarray:
     """Labels in the dtype a coordinate holds them in."""
     array = np.asarray(values)
-    dtype = _as_dtype(array)
+    dtype = _as_dtype(values)
     if _time_like(dtype):
         return as_ns(array)
     return array.astype(dtype, copy=False)
