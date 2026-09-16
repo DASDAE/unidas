@@ -11,11 +11,22 @@ import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
+from conftest import DASCORE_RUN_TABLES, needs_run_tables
 from dascore.examples import EXAMPLE_PATCHES
 from xdas.core.dataarray import DataArray
 
 import unidas
-from unidas import BaseDAS, Converter, adapter, convert, optional_import
+from unidas import (
+    BaseDAS,
+    Categorical,
+    Converter,
+    NumericND,
+    adapter,
+    concat,
+    convert,
+    optional_import,
+)
+from unidas.converters.xdas import to_xdas_coord
 
 try:
     from lightguide.blast import Blast
@@ -82,6 +93,8 @@ def format_name(request):
     name = request.param
     if name.startswith("lightguide") and not LIGHTGUIDE_SUPPORTED:
         pytest.skip("Lightguide is not supported or installed")
+    if name.startswith("dascore") and not DASCORE_RUN_TABLES:
+        pytest.skip("This DASCore does not state coordinate run tables.")
     return request.param
 
 
@@ -136,53 +149,67 @@ class TestMisc:
         assert out == expected
 
 
+class TestVendoring:
+    """The package is a directory a project can copy under its own name."""
+
+    def test_it_converts_under_another_name(self, tmp_path):
+        """A vendored copy converts out of its own base representation."""
+        import importlib
+        import pathlib
+        import shutil
+        import sys
+
+        source = pathlib.Path(unidas.__file__).parent
+        shutil.copytree(
+            source, tmp_path / "dasconv", ignore=shutil.ignore_patterns("__pycache__")
+        )
+        sys.path.insert(0, str(tmp_path))
+        try:
+            dasconv = importlib.import_module("dasconv")
+            labels = np.asarray([1.0, 2.0, 3.0])
+            array = xr.DataArray(np.zeros(3), dims="x", coords={"x": labels})
+            # The registry names the base representation after the package
+            # it is defined in, so the copy is its own hub.
+            base = dasconv.convert(array, "dasconv.BaseDAS")
+            assert type(base).__module__.split(".")[0] == "dasconv"
+            out = dasconv.convert(base, "xarray.DataArray")
+            np.testing.assert_array_equal(np.asarray(out.x.values), labels)
+        finally:
+            sys.path.remove(str(tmp_path))
+            for name in [x for x in sys.modules if x.split(".")[0] == "dasconv"]:
+                del sys.modules[name]
+
+
 class TestCoordinate:
-    """Test suite for coordinate base behavior."""
+    """Test suite for how the coordinate shapes answer a destination."""
 
-    def test_base_coordinate_methods_raise(self):
-        """Ensure base coordinate methods are abstract."""
-        coord = unidas.Coordinate()
-        msg = "Not implemented"
-
-        with pytest.raises(NotImplementedError, match=msg):
-            coord.to_dascore_coord()
-        with pytest.raises(NotImplementedError, match=msg):
-            coord.to_xdas_coord()
-        with pytest.raises(NotImplementedError, match=msg):
-            coord.get_step()
-        with pytest.raises(NotImplementedError, match=msg):
-            coord.get_start()
-        with pytest.raises(NotImplementedError, match=msg):
-            coord.get_array()
+    def test_labels_which_are_not_numbers_state_no_sampling(self):
+        """A destination needing a rate is told what the labels are instead."""
+        coord = Categorical.from_labels(["a", "b"], dims=("distance",))
+        with pytest.raises(ValueError, match="numeric or time axis"):
+            unidas.core.coord_step(coord)
 
     def test_single_sample_coordinate_to_xdas(self):
         """
         An axis with one sample has no increasing tie indices to give xdas, so
         it converts to a dense coordinate instead of an interpolated one.
         """
-        coord = unidas.EvenlySampledCoordinate(
-            tie_values=(10.0, 10.0),
-            tie_indices=(0, 0),
-            step=1.0,
-            dims=("distance",),
-        )
+        coord = NumericND.from_run(10.0, 1.0, 1, dims=("distance",))
 
-        out = coord.to_xdas_coord()
+        out = to_xdas_coord(coord, ("distance",))
 
         assert len(out) == 1
         assert np.all(np.asarray(out) == [10.0])
 
-    def test_evenly_sampled_coordinate_with_gaps_to_dascore_raises(self):
-        """Ensure gapped coordinates cannot convert to DASCore."""
-        coord = unidas.EvenlySampledCoordinate(
-            tie_values=(0, 1, 3),
-            tie_indices=(0, 2, 4),
-            step=1,
-            dims=("distance",),
+    def test_runs_with_a_gap_between_have_no_step(self):
+        """A rate across a hole is a claim about samples which are not there."""
+        coord = concat(
+            NumericND.from_run(0.0, 1.0, 2, dims=("distance",)),
+            NumericND.from_run(3.0, 1.0, 2, dims=("distance",)),
         )
-
-        with pytest.raises(NotImplementedError, match="gaps"):
-            coord.to_dascore_coord()
+        np.testing.assert_array_equal(coord.values, [0.0, 1.0, 3.0, 4.0])
+        with pytest.raises(ValueError, match="evenly sampled"):
+            unidas.core.coord_step(coord)
 
 
 class TestConverterBase:
@@ -237,6 +264,7 @@ class TestDASCorePatch:
         assert isinstance(out, NAME_CLASS_MAP[format_name])
 
     @pytest.mark.parametrize("example_name", DASCORE_EXAMPLE_NAMES)
+    @needs_run_tables
     def test_example_patch_to_base_das(self, example_name):
         """Ensure all DASCore generated examples convert to BaseDAS."""
         patch = dc.get_example_patch(example_name)
@@ -249,6 +277,7 @@ class TestDASCorePatch:
         out.validate()
 
     @pytest.mark.parametrize("example_name", DASCORE_EXAMPLE_NAMES)
+    @needs_run_tables
     def test_example_patch_round_trip_to_dascore(self, example_name):
         """Ensure all DASCore generated examples round-trip through BaseDAS."""
         patch = dc.get_example_patch(example_name)
@@ -269,6 +298,7 @@ class TestDASCorePatch:
             )
 
     @pytest.mark.parametrize("example_name", DASCORE_EXAMPLE_NAMES)
+    @needs_run_tables
     def test_example_patch_to_xdas_dataarray(self, example_name):
         """Ensure all DASCore generated examples convert to XDAS."""
         patch = dc.get_example_patch(example_name)
@@ -297,6 +327,7 @@ class TestDASCorePatch:
         assert out.data.shape == dascore_patch.shape
 
     @pytest.mark.parametrize("example_name", DASPY_COMPATIBLE_DASCORE_EXAMPLES)
+    @needs_run_tables
     def test_example_patch_to_daspy_section(self, example_name):
         """Ensure DASCore example patches can convert to DASPy sections."""
         patch = dc.get_example_patch(example_name)
@@ -311,6 +342,7 @@ class TestDASCorePatch:
         ("example_name", "message"),
         DASPY_UNSUPPORTED_DASCORE_EXAMPLES.items(),
     )
+    @needs_run_tables
     def test_unsupported_example_patch_to_daspy_section(self, example_name, message):
         """Ensure unsupported DASCore examples fail with expected errors."""
         patch = dc.get_example_patch(example_name)
@@ -318,6 +350,7 @@ class TestDASCorePatch:
         with pytest.raises(ValueError, match=message):
             convert(patch, to="daspy.Section")
 
+    @needs_run_tables
     def test_single_distance_patch_to_daspy_section(self):
         """Ensure singleton distance coordinates default to dx=1."""
         # np.arange defaults to int32 on Windows, which overflows once the
@@ -346,14 +379,8 @@ class TestDASCorePatch:
         base_das = BaseDAS(
             data=np.zeros((3, 4)),
             coords={
-                "distance": unidas.ArrayCoordinate(
-                    data=distance,
-                    dims=("distance",),
-                ),
-                "time": unidas.ArrayCoordinate(
-                    data=time,
-                    dims=("time",),
-                ),
+                "distance": NumericND.from_array(distance, dims=("distance",)),
+                "time": NumericND.from_array(time, dims=("time",)),
             },
             attrs={},
             dims=("distance", "time"),
@@ -448,12 +475,12 @@ class TestXdasDataArray:
 
         out = convert(data_array, to="unidas.BaseDAS")
 
-        assert isinstance(out.coords["quality"], unidas.ArrayCoordinate)
+        assert isinstance(out.coords["quality"], NumericND)
         assert out.coords["quality"].dims == ("time",)
-        assert np.array_equal(out.coords["quality"].data, [1, 2, 3])
+        assert np.array_equal(out.coords["quality"].values, [1, 2, 3])
 
-    def test_gapped_interp_coordinate_to_base_das_raises(self):
-        """Ensure gapped XDAS coordinates are rejected."""
+    def test_a_change_of_slope_between_tie_points_is_a_second_run(self):
+        """Tie points which are not one index apart share the sample between."""
         xdas = optional_import("xdas")
         data_array = xdas.DataArray(
             np.zeros((5, 2)),
@@ -464,8 +491,33 @@ class TestXdasDataArray:
             dims=("time", "distance"),
         )
 
-        with pytest.raises(NotImplementedError, match="gaps"):
-            convert(data_array, to="unidas.BaseDAS")
+        coord = convert(data_array, to="unidas.BaseDAS").coords["time"]
+        assert coord.runs["length"].tolist() == [3, 2]
+        np.testing.assert_array_equal(coord.values, data_array["time"].values)
+        np.testing.assert_array_equal(coord.values, [0.0, 0.5, 1.0, 2.0, 3.0])
+        # Sent back, the runs share their tie point rather than claim a hole.
+        back = to_xdas_coord(coord, ("time",))
+        assert list(back.tie_indices) == [0, 2, 4]
+        assert list(back.tie_values) == [0.0, 1.0, 3.0]
+
+    def test_integer_tie_points_which_round_are_read_as_labels(self):
+        """Integer labels are ticks: a span not whole ticks apart is rounded."""
+        xdas = optional_import("xdas")
+        coord = xdas.InterpCoordinate(
+            {"tie_indices": [0, 2, 4], "tie_values": [0, 1, 3]}, dim="time"
+        )
+        data_array = xdas.DataArray(np.zeros(5), coords={"time": coord}, dims=("time",))
+        out = convert(data_array, to="unidas.BaseDAS").coords["time"]
+        # The labels are all this coordinate can be described by.
+        assert out.labels is not None and not out.evenly_sampled
+        np.testing.assert_array_equal(out.values, coord.values)
+        whole = xdas.InterpCoordinate(
+            {"tie_indices": [0, 2, 4], "tie_values": [0, 2, 6]}, dim="time"
+        )
+        data_array = xdas.DataArray(np.zeros(5), coords={"time": whole}, dims=("time",))
+        out = convert(data_array, to="unidas.BaseDAS").coords["time"]
+        assert out.runs["num"].tolist() == [1, 2]
+        np.testing.assert_array_equal(out.values, whole.values)
 
 
 class TestLightGuideBlast:
@@ -589,6 +641,7 @@ class TestAdapter:
         assert set(vars(raw_func)) == before
         assert wrapped.func is wrapped.raw_function is raw_func
 
+    @needs_run_tables
     def test_different_return_type(self, daspy_section):
         """Ensure wrapped functions that return different types still work."""
 
