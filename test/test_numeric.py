@@ -1389,6 +1389,19 @@ class TestPlatformIntegers:
         assert NumericND.from_array([1, 2, 4]).dtype == np.dtype("int64")
         assert NumericND.from_array([1, 2, 4]).values.dtype == np.dtype("int64")
 
+    def test_a_join_widens_within_a_kind(self):
+        """int32 beside int64 joins as int64; float32 beside float64 as float64."""
+        narrow = NumericND.from_array(np.array([200, 203, 207], dtype="int32"))
+        joined = concat(NumericND.from_run(0, 2, 8), narrow)
+        assert joined.dtype == np.dtype("int64")
+        np.testing.assert_array_equal(joined.values, [*range(0, 16, 2), 200, 203, 207])
+        floats = concat(
+            NumericND.from_run(np.float32(0), 0.5, 4), NumericND.from_run(10.0, 0.5, 2)
+        )
+        assert floats.dtype == np.dtype("float64")
+        with pytest.raises(CoordinateError, match="share a dtype"):
+            concat(NumericND.from_run(0, 1, 3), NumericND.from_run(0.0, 1.0, 3))
+
     def test_a_narrow_integer_array_keeps_its_dtype(self):
         """An array which states int32 stays int32."""
         narrow = np.array([1, 2, 4], dtype="int32")

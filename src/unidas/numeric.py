@@ -38,6 +38,7 @@ coordinate delegates to them.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import math
@@ -2411,6 +2412,31 @@ def _nanmax(values):
     return np.nanmax(values) if values.dtype.kind == "f" else values.max()
 
 
+def _widened(coords) -> tuple:
+    """
+    Coordinates of one dtype kind, widened to the widest of them.
+
+    An int32 table beside an int64 one, or float32 beside float64, loses
+    nothing by widening, and numpy's default integer differs between
+    platforms, so a join must not depend on it. Kinds are never mixed.
+    """
+    dtypes = {np.dtype(x.dtype) for x in coords}
+    kinds = {x.kind for x in dtypes}
+    if len(dtypes) < 2 or len(kinds) > 1 or not kinds <= set("iuf"):
+        return tuple(coords)
+    target = np.result_type(*dtypes)
+    return tuple(
+        x
+        if np.dtype(x.dtype) == target
+        else dataclasses.replace(
+            x,
+            dtype=target,
+            labels=None if x.labels is None else x.labels.astype(target),
+        )
+        for x in coords
+    )
+
+
 def concat(*coords: NumericND) -> NumericND:
     """
     Join run tables end to end into one table.
@@ -2427,6 +2453,7 @@ def concat(*coords: NumericND) -> NumericND:
     if not coords:
         msg = "There is nothing to concatenate."
         raise CoordinateError(msg)
+    coords = _widened(coords)
     first, *rest = coords
     if any(np.dtype(x.dtype) != np.dtype(first.dtype) for x in rest):
         msg = f"Runs must share a dtype, got {[str(x.dtype) for x in coords]}."
