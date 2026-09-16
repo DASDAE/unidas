@@ -1,8 +1,9 @@
 """
 Ensure a pull request raises unidas' version above the base branch.
 
-The version is a single hardcoded string in src/unidas.py which setuptools
-reads at build time (see pyproject.toml). Nothing bumps it automatically, so
+The version is a single hardcoded string in src/unidas/__init__.py which
+setuptools reads at build time (see pyproject.toml); before 0.3 it lived in
+src/unidas.py, which the base branch may still hold. Nothing bumps it automatically, so
 without this check two different states of the code can share one version
 string, and a released version no longer identifies what was released.
 """
@@ -16,7 +17,9 @@ from pathlib import Path
 
 from packaging.version import InvalidVersion, Version
 
-VERSION_FILE = "src/unidas.py"
+# The package spelling first; the single-module spelling for an older base.
+VERSION_FILES = ("src/unidas/__init__.py", "src/unidas.py")
+VERSION_FILE = VERSION_FILES[0]
 VERSION_REGEX = re.compile(r"""^__version__\s*=\s*["']([^"']+)["']""", re.MULTILINE)
 
 
@@ -33,16 +36,15 @@ def parse_version(source_code: str, origin: str) -> Version:
 
 def read_base_version(base_ref: str) -> Version:
     """Read the version file as it exists on the base branch."""
-    result = subprocess.run(
-        ["git", "show", f"{base_ref}:{VERSION_FILE}"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode:
-        sys.exit(
-            f"Could not read {VERSION_FILE} from {base_ref}: {result.stderr.strip()}"
+    for version_file in VERSION_FILES:
+        result = subprocess.run(
+            ["git", "show", f"{base_ref}:{version_file}"],
+            capture_output=True,
+            text=True,
         )
-    return parse_version(result.stdout, base_ref)
+        if not result.returncode:
+            return parse_version(result.stdout, base_ref)
+    sys.exit(f"Could not read a version file from {base_ref}: {result.stderr.strip()}")
 
 
 def main() -> None:
@@ -51,7 +53,8 @@ def main() -> None:
         sys.exit(f"usage: {Path(sys.argv[0]).name} <base_ref>")
     base_ref = sys.argv[1]
     base_version = read_base_version(base_ref)
-    head_version = parse_version(Path(VERSION_FILE).read_text(), "this branch")
+    head_file = next((x for x in VERSION_FILES if Path(x).exists()), VERSION_FILE)
+    head_version = parse_version(Path(head_file).read_text(), "this branch")
     if head_version <= base_version:
         sys.exit(
             f"Version must increase: {base_ref} is at {base_version}, this branch "

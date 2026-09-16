@@ -13,10 +13,22 @@ import pytest
 import xarray as xr
 from xdas.synthetics import wavelet_wavefronts
 
+# unidas states a DASCore coordinate as the run table DASCore holds it in,
+# which DASCore has from the release that introduced them. An older one has
+# no table to read or to be given, so its conversions are skipped.
+DASCORE_RUN_TABLES = hasattr(dc.core.coords, "NumericND")
+
+needs_run_tables = pytest.mark.skipif(
+    not DASCORE_RUN_TABLES,
+    reason="This DASCore does not state coordinate run tables.",
+)
+
 
 @pytest.fixture(scope="session")
 def dascore_patch():
     """Get a dascore patch for testing."""
+    if not DASCORE_RUN_TABLES:
+        pytest.skip("This DASCore does not state coordinate run tables.")
     return dc.get_example_patch()
 
 
