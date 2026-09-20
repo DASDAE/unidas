@@ -564,6 +564,49 @@ class TestAdapter:
         assert new2.raw_function is my_patch_func.raw_function
         assert new.raw_function is my_patch_func.raw_function
 
+    def test_convert_second_argument(self, dascore_patch):
+        """The arg parameter selects which argument gets converted."""
+
+        @adapter("daspy.Section", arg=1)
+        def section_function(label, sec):
+            """Dummy section function which converts its second argument."""
+            assert isinstance(label, str)
+            assert isinstance(sec, daspy.Section)
+            return sec
+
+        patch = dascore_patch.transpose("distance", "time")
+        out = section_function("not_das", patch)
+        assert isinstance(out, dc.Patch)
+
+    def test_convert_argument_by_name(self, dascore_patch):
+        """An argument named with arg works positionally and by keyword."""
+
+        @adapter("daspy.Section", arg="sec")
+        def section_function(label, sec):
+            """Dummy section function which converts its named argument."""
+            assert isinstance(sec, daspy.Section)
+            return sec
+
+        patch = dascore_patch.transpose("distance", "time")
+        out1 = section_function("not_das", sec=patch)
+        out2 = section_function("not_das", patch)
+        assert isinstance(out1, dc.Patch)
+        assert isinstance(out2, dc.Patch)
+
+    def test_stacked_adapters(self, dascore_patch):
+        """Adapters for different arguments stack to convert each one."""
+
+        @adapter("daspy.Section", arg="sec1")
+        @adapter("daspy.Section", arg="sec2")
+        def section_function(sec1, sec2):
+            """Dummy section function which converts both arguments."""
+            assert isinstance(sec1, daspy.Section)
+            assert isinstance(sec2, daspy.Section)
+            return sec1
+
+        patch = dascore_patch.transpose("distance", "time")
+        assert isinstance(section_function(patch, patch), dc.Patch)
+
     def test_different_return_type(self, daspy_section):
         """Ensure wrapped functions that return different types still work."""
 

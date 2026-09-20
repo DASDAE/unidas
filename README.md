@@ -37,6 +37,15 @@ out = daspy_function(patch)
 assert isinstance(out, dc.Patch)
 ```
 
+By default the first argument is converted. Use `arg` to name a different one, either by position or by parameter name.
+
+```python
+@unidas.adapter("daspy.Section", arg="sec")
+def daspy_function(reference, sec):
+    """Only sec is converted to a daspy section."""
+    return sec
+```
+
 You can also use `adapter` to wrap un-wrapped functions. 
 
 ```python
