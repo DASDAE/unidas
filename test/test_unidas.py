@@ -593,6 +593,20 @@ class TestAdapter:
         assert isinstance(out1, dc.Patch)
         assert isinstance(out2, dc.Patch)
 
+    def test_stacked_adapters(self, dascore_patch):
+        """Adapters for different arguments stack to convert each one."""
+
+        @adapter("daspy.Section", arg="sec1")
+        @adapter("daspy.Section", arg="sec2")
+        def section_function(sec1, sec2):
+            """Dummy section function which converts both arguments."""
+            assert isinstance(sec1, daspy.Section)
+            assert isinstance(sec2, daspy.Section)
+            return sec1
+
+        patch = dascore_patch.transpose("distance", "time")
+        assert isinstance(section_function(patch, patch), dc.Patch)
+
     def test_different_return_type(self, daspy_section):
         """Ensure wrapped functions that return different types still work."""
 
