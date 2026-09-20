@@ -902,17 +902,18 @@ class XArrayConverter(Converter):
         )
 
 
-def adapter(to: str):
+def adapter(to: str, arg: int | str = 0):
     """
     A decorator to make the wrapped function able to accept multiple DAS inputs.
-
-    The decorator function must
 
     Parameters
     ----------
     to
-        The DAS data structure expected as the first argument of the
+        The DAS data structure expected by the converted argument of the
         wrapped function.
+    arg
+        The position (int) or name (str) of the argument to convert. It can
+        be passed positionally or by keyword when the function is called.
 
     Returns
     -------
@@ -927,19 +928,27 @@ def adapter(to: str):
     def _outer(func):
         # Check if the appropriate decorator has already been applied and
         # just return if so.
-        if getattr(func, "_unidas_to", None) == to:
+        if getattr(func, "_unidas_to", None) == (to, arg):
             return func
 
+        params = list(inspect.signature(func).parameters)
+        by_name = isinstance(arg, str)
+        pos, name = (params.index(arg), arg) if by_name else (arg, params[arg])
+
         @wraps(func)
-        def _decorator(obj, *args, **kwargs):
+        def _decorator(*args, **kwargs):
             """Simple decorator for wrapping."""
             # Convert the incoming object to target. This should do nothing
             # if it is already the correct format.
+            args = list(args)
+            where, slot = (kwargs, name) if name in kwargs else (args, pos)
+            obj = where[slot]
             cls = obj if inspect.isclass(obj) else type(obj)
             key = get_class_key(cls)
             conversion_class: Converter = Converter._registry[key]
             input_obj = convert(obj, to)
-            func_out = func(input_obj, *args, **kwargs)
+            where[slot] = input_obj
+            func_out = func(*args, **kwargs)
             cls_out = obj if inspect.isclass(func_out) else type(func_out)
             # Sometimes a function can return a different type than its input
             # e.g., a dataframe. In this case just return output.
@@ -957,7 +966,7 @@ def adapter(to: str):
         _decorator.raw_function = getattr(func, "raw_function", func)
         # Also attach a private flag indicating the function has already
         # been wrapped. We don't want to allow this more than once.
-        _decorator._unidas_to = to
+        _decorator._unidas_to = (to, arg)
 
         return _decorator
 
