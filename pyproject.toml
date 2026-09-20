@@ -38,20 +38,20 @@ keywords = ["geophysics", "distributed-acoustic-sensing"]
 # --- Dependencies
 
 dependencies = [
-    "numpy>=1.26; python_version < '3.13'",
-    "numpy>=2; python_version >= '3.13'",
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
 
 extras = [
     "xarray",
-    "dascore; python_version < '3.13'",
-    "daspy-toolbox; python_version < '3.13'",
-    "lightguide; platform_system != 'Windows' and python_version < '3.13'",
-    "xdas; python_version < '3.13'",
-    # This is due to pyrocko. Remove when it has a new release.
-    "numpy<2; python_version < '3.13'",
+    "dascore",
+    "daspy-toolbox",
+    # lightguide's compiled filter segfaults on python 3.14.
+    "lightguide; platform_system != 'Windows' and python_version < '3.14'",
+    # pyrocko (via lightguide) needs numpy 1 before python 3.12.
+    "numpy<2; python_version < '3.12'",
+    "xdas",
 ]
 
 test = [
