@@ -564,6 +564,35 @@ class TestAdapter:
         assert new2.raw_function is my_patch_func.raw_function
         assert new.raw_function is my_patch_func.raw_function
 
+    def test_convert_second_argument(self, dascore_patch):
+        """The arg parameter selects which argument gets converted."""
+
+        @adapter("daspy.Section", arg=1)
+        def section_function(label, sec):
+            """Dummy section function which converts its second argument."""
+            assert isinstance(label, str)
+            assert isinstance(sec, daspy.Section)
+            return sec
+
+        patch = dascore_patch.transpose("distance", "time")
+        out = section_function("not_das", patch)
+        assert isinstance(out, dc.Patch)
+
+    def test_convert_argument_by_name(self, dascore_patch):
+        """An argument named with arg works positionally and by keyword."""
+
+        @adapter("daspy.Section", arg="sec")
+        def section_function(label, sec):
+            """Dummy section function which converts its named argument."""
+            assert isinstance(sec, daspy.Section)
+            return sec
+
+        patch = dascore_patch.transpose("distance", "time")
+        out1 = section_function("not_das", sec=patch)
+        out2 = section_function("not_das", patch)
+        assert isinstance(out1, dc.Patch)
+        assert isinstance(out2, dc.Patch)
+
     def test_different_return_type(self, daspy_section):
         """Ensure wrapped functions that return different types still work."""
 
