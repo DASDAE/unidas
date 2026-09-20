@@ -51,6 +51,7 @@ extras = [
     "lightguide; platform_system != 'Windows' and python_version < '3.14'",
     # pyrocko (via lightguide) needs numpy 1 before python 3.12.
     "numpy<2; python_version < '3.12'",
+    "numpy>=2; python_version >= '3.12'",
     "xdas",
 ]
 
