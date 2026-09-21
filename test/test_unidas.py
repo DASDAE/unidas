@@ -529,10 +529,13 @@ class TestConvert:
         """Only the DAS structures under the requested keys are converted."""
         patch = dascore_patch.transpose("distance", "time")
         obj = {"a": patch, "b": patch, "n": 1}
-        out = convert(obj, "daspy.Section", keys=("a", "missing"))
+        out = convert(obj, "daspy.Section", keys=("a", "n", "missing"))
         assert isinstance(out["a"], daspy.Section)
         assert isinstance(out["b"], dc.Patch)
         assert out["n"] == 1
+        # A lone string names one key.
+        out = convert({"long": patch}, "daspy.Section", keys="long")
+        assert isinstance(out["long"], daspy.Section)
 
 
 class TestAdapter:

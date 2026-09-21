@@ -910,7 +910,8 @@ def _convert_values(obj, keys, func):
     registered DAS structures, are left untouched.
     """
     out = dict(obj)
-    for key in keys:
+    # A lone string is one key, not its characters.
+    for key in (keys,) if isinstance(keys, str) else keys:
         if key not in out:
             continue
         value = out[key]
@@ -919,7 +920,7 @@ def _convert_values(obj, keys, func):
     return out
 
 
-def adapter(to: str, arg: int | str = 0, keys: tuple[str, ...] | None = None):
+def adapter(to: str, arg: int | str = 0, keys: str | tuple[str, ...] | None = None):
     """
     A decorator to make the wrapped function able to accept multiple DAS inputs.
 
@@ -996,7 +997,7 @@ def adapter(to: str, arg: int | str = 0, keys: tuple[str, ...] | None = None):
     return _outer
 
 
-def convert(obj, to: str, keys: tuple[str, ...] | None = None):
+def convert(obj, to: str, keys: str | tuple[str, ...] | None = None):
     """
     Convert an object to something else.
 
