@@ -4,6 +4,7 @@ Tests for core functionality of unidas.
 
 import datetime
 import platform
+from functools import partial
 
 import dascore as dc
 import daspy
@@ -524,6 +525,15 @@ class TestConvert:
         with pytest.raises(ValueError, match=msg):
             convert(dascore_patch, "notadaslibrary.NotAClass")
 
+    def test_keys_converts_mapping_values(self, dascore_patch):
+        """Only the DAS structures under the requested keys are converted."""
+        patch = dascore_patch.transpose("distance", "time")
+        obj = {"a": patch, "b": patch, "n": 1}
+        out = convert(obj, "daspy.Section", keys=("a", "missing"))
+        assert isinstance(out["a"], daspy.Section)
+        assert isinstance(out["b"], dc.Patch)
+        assert out["n"] == 1
+
 
 class TestAdapter:
     """Tests for adapter decorator."""
@@ -617,6 +627,82 @@ class TestAdapter:
 
         out = dummy_func(daspy_section)
         assert isinstance(out, pd.DataFrame)
+
+    def test_class_return(self, dascore_patch):
+        """Ensure a function which returns a class (not an instance) works."""
+
+        @adapter("daspy.Section")
+        def section_function(sec):
+            """Dummy section function which returns a class."""
+            return dict
+
+        patch = dascore_patch.transpose("distance", "time")
+        assert section_function(patch) is dict
+
+    def test_bound_method(self, dascore_patch):
+        """Ensure a bound method can be wrapped."""
+
+        class SectionHandler:
+            """A dummy class with a section method."""
+
+            def process(self, sec):
+                """Dummy section method."""
+                assert isinstance(sec, daspy.Section)
+                return sec
+
+        func = adapter("daspy.Section")(SectionHandler().process)
+        patch = dascore_patch.transpose("distance", "time")
+        assert isinstance(func(patch), dc.Patch)
+
+    def test_partial(self, dascore_patch):
+        """Ensure a functools.partial object can be wrapped."""
+
+        def section_function(label, sec):
+            """Dummy section function."""
+            assert isinstance(sec, daspy.Section)
+            return sec
+
+        func = adapter("daspy.Section")(partial(section_function, "not_das"))
+        patch = dascore_patch.transpose("distance", "time")
+        assert isinstance(func(patch), dc.Patch)
+
+    def test_keys_converts_dict_values(self, dascore_patch):
+        """Only the values under keys are converted back to the input type."""
+
+        @adapter("daspy.Section", keys=("a",))
+        def section_function(sec):
+            """Dummy section function which returns a dict."""
+            return {"a": sec, "b": sec, "c": 1}
+
+        patch = dascore_patch.transpose("distance", "time")
+        out = section_function(patch)
+        assert isinstance(out["a"], dc.Patch)
+        assert isinstance(out["b"], daspy.Section)
+        assert out["c"] == 1
+
+    def test_dict_untouched_without_keys(self, dascore_patch):
+        """A returned dict is left alone when keys is not used."""
+
+        @adapter("daspy.Section")
+        def section_function(sec):
+            """Dummy section function which returns a dict."""
+            return {"a": sec}
+
+        patch = dascore_patch.transpose("distance", "time")
+        out = section_function(patch)
+        assert isinstance(out["a"], daspy.Section)
+
+    def test_sequence_not_entered(self, dascore_patch):
+        """Sequence returns are never entered, even when keys is used."""
+
+        @adapter("daspy.Section", keys=("a",))
+        def section_function(sec):
+            """Dummy section function which returns a list."""
+            return [sec]
+
+        patch = dascore_patch.transpose("distance", "time")
+        out = section_function(patch)
+        assert isinstance(out[0], daspy.Section)
 
 
 class TestIntegrations:
