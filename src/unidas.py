@@ -22,7 +22,7 @@ __all__ = ("adapter", "convert")
 
 # Keep the version hardcoded so vendored copies report their own version
 # without requiring installed package metadata.
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 
 # Define the urls to each project to provide helpful error messages.
 PROJECT_URLS = {
@@ -902,7 +902,25 @@ class XArrayConverter(Converter):
         )
 
 
-def adapter(to: str, arg: int | str = 0):
+def _convert_values(obj, keys, func):
+    """
+    Apply func to the values of a mapping stored under keys.
+
+    Returns a plain dict. Keys which are absent, or whose values are not
+    registered DAS structures, are left untouched.
+    """
+    out = dict(obj)
+    # A lone string is one key, not its characters.
+    for key in (keys,) if isinstance(keys, str) else keys:
+        if key not in out:
+            continue
+        value = out[key]
+        if get_class_key(type(value)) in Converter._registry:
+            out[key] = func(value)
+    return out
+
+
+def adapter(to: str, arg: int | str = 0, keys: str | tuple[str, ...] | None = None):
     """
     A decorator to make the wrapped function able to accept multiple DAS inputs.
 
@@ -914,6 +932,10 @@ def adapter(to: str, arg: int | str = 0):
     arg
         The position (int) or name (str) of the argument to convert. It can
         be passed positionally or by keyword when the function is called.
+    keys
+        If provided, and the wrapped function returns a mapping, the DAS
+        structures stored under these keys are converted back to the input
+        type and a dict is returned.
 
     Returns
     -------
@@ -928,7 +950,7 @@ def adapter(to: str, arg: int | str = 0):
     def _outer(func):
         # Check if the appropriate decorator has already been applied and
         # just return if so.
-        if getattr(func, "_unidas_to", None) == (to, arg):
+        if getattr(func, "_unidas_to", None) == (to, arg, keys):
             return func
 
         params = list(inspect.signature(func).parameters)
@@ -949,7 +971,10 @@ def adapter(to: str, arg: int | str = 0):
             input_obj = convert(obj, to)
             where[slot] = input_obj
             func_out = func(*args, **kwargs)
-            cls_out = obj if inspect.isclass(func_out) else type(func_out)
+            # Optionally convert the values of a returned mapping.
+            if keys is not None and isinstance(func_out, Mapping):
+                return _convert_values(func_out, keys, lambda x: convert(x, key))
+            cls_out = func_out if inspect.isclass(func_out) else type(func_out)
             # Sometimes a function can return a different type than its input
             # e.g., a dataframe. In this case just return output.
             if get_class_key(cls_out) != to:
@@ -960,20 +985,19 @@ def adapter(to: str, arg: int | str = 0):
             return out
 
         # Following the convention of pydantic, we attach the raw function
-        # in case it needs to be accessed later. Also ensures to keep the
-        # original function if it is already wrapped.
-        func.func = getattr(func, "raw_function", func)
+        # to the wrapper in case it needs to be accessed later. Also ensures
+        # to keep the original function if it is already wrapped.
         _decorator.raw_function = getattr(func, "raw_function", func)
         # Also attach a private flag indicating the function has already
         # been wrapped. We don't want to allow this more than once.
-        _decorator._unidas_to = (to, arg)
+        _decorator._unidas_to = (to, arg, keys)
 
         return _decorator
 
     return _outer
 
 
-def convert(obj, to: str):
+def convert(obj, to: str, keys: str | tuple[str, ...] | None = None):
     """
     Convert an object to something else.
 
@@ -983,11 +1007,16 @@ def convert(obj, to: str):
         An input object which has Converter class.
     to
         The name of the output class.
+    keys
+        If provided, and obj is a mapping, the DAS structures stored under
+        these keys are converted and a dict is returned.
 
     Returns
     -------
     The input object converted to the specified format.
     """
+    if keys is not None and isinstance(obj, Mapping):
+        return _convert_values(obj, keys, lambda x: convert(x, to))
     obj_class = obj if inspect.isclass(obj) else type(obj)
     key = get_class_key(obj_class)
     # No conversion needed, simply return object.
