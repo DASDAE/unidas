@@ -22,7 +22,7 @@ __all__ = ("adapter", "convert")
 
 # Keep the version hardcoded so vendored copies report their own version
 # without requiring installed package metadata.
-__version__ = "0.1.5"
+__version__ = "0.1.6"
 
 # Define the urls to each project to provide helpful error messages.
 PROJECT_URLS = {
@@ -697,7 +697,7 @@ class DASCorePatchConverter(Converter):
         units = str(coord.units) if coord.units is not None else None
         if coord.evenly_sampled:
             tie_inds = (0, len(coord) - 1)
-            tie_vals = (coord.start, coord.stop - coord.step)
+            tie_vals = (coord[0], coord[-1])
             return EvenlySampledCoordinate(
                 tie_values=tie_vals,
                 tie_indices=tie_inds,
@@ -706,7 +706,7 @@ class DASCorePatchConverter(Converter):
                 step=coord.step,
             )
         else:
-            return ArrayCoordinate(data=coord.data, units=units, dims=dims)
+            return ArrayCoordinate(data=coord.values, units=units, dims=dims)
 
     @converts_to("unidas.BaseDAS")
     def to_base(self, patch) -> BaseDAS:
