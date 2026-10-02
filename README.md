@@ -59,6 +59,25 @@ patch = dc.get_example_patch()
 patch_hilberto = dascore_hilbert(patch)
 ```
 
+Some functions create DAS data rather than transform it, such as file readers, so there is no input to infer the output type from. For these, the `output_adapter` decorator declares what the function returns and lets the caller pick the type they want with a `to` keyword. The function itself never sees the keyword.
+
+```python
+import dascore as dc
+import unidas
+
+
+@unidas.output_adapter("dascore.Patch")
+def read(path):
+    """Read a file with dascore."""
+    return dc.read(path)[0]
+
+
+patch = read("file.h5")  # a dascore patch, as before
+da = read("file.h5", to="xdas.DataArray")  # converted on the way out
+```
+
+The target can be a string key, a class, or an existing object whose type you want to match. If the wrapped function already has a parameter named `to`, pass another name with `kwarg=`.
+
 The `convert` function converts from one library's data structure to another library's data structure.
 
 ```python
@@ -121,7 +140,7 @@ Unidas is single file (src/unidas.py) so it can also be vendored (copied directl
 If you are creating/maintaining a library for doing some kind of specialized DAS processing in python, we recommend you do two things:
 
 1. Pick the DAS library you prefer and use it internally. 
-2. Apply the `adapter` decorator to your project's API.
+2. Apply the `adapter` decorator to your project's API, and `output_adapter` to functions which create DAS data, such as readers.
 
 Doing so will make your project easily accessible by users of all the libraries supported by unidas. 
 

@@ -3,6 +3,7 @@ Tests for core functionality of unidas.
 """
 
 import datetime
+import inspect
 import platform
 from functools import partial
 
@@ -16,7 +17,14 @@ from dascore.examples import EXAMPLE_PATCHES
 from xdas.core.dataarray import DataArray
 
 import unidas
-from unidas import BaseDAS, Converter, adapter, convert, optional_import
+from unidas import (
+    BaseDAS,
+    Converter,
+    adapter,
+    convert,
+    optional_import,
+    output_adapter,
+)
 
 try:
     from lightguide.blast import Blast
@@ -776,6 +784,144 @@ class TestAdapter:
         patch = dascore_patch.transpose("distance", "time")
         out = section_function(patch)
         assert isinstance(out[0], daspy.Section)
+
+
+class TestOutputAdapter:
+    """Tests for output_adapter decorator."""
+
+    @pytest.fixture(scope="class")
+    def read_patch(self, dascore_patch):
+        """A reader-like function which returns a dascore patch."""
+
+        @output_adapter("dascore.Patch")
+        def read(path):
+            """Pretend to read a file."""
+            assert isinstance(path, str)
+            return dascore_patch
+
+        return read
+
+    def test_default_returns_native_type(self, read_patch):
+        """Without the keyword the output is returned unchanged."""
+        assert isinstance(read_patch("file.h5"), dc.Patch)
+
+    def test_convert_by_key(self, read_patch):
+        """A string key selects the output type."""
+        out = read_patch("file.h5", to="daspy.Section")
+        assert isinstance(out, daspy.Section)
+
+    def test_convert_by_class(self, read_patch):
+        """A class selects the output type."""
+        out = read_patch("file.h5", to=daspy.Section)
+        assert isinstance(out, daspy.Section)
+
+    def test_convert_by_instance(self, read_patch, daspy_section):
+        """An instance selects the output type."""
+        out = read_patch("file.h5", to=daspy_section)
+        assert isinstance(out, daspy.Section)
+
+    def test_same_type_is_noop(self, read_patch, dascore_patch):
+        """Asking for the native type returns the output as is."""
+        assert read_patch("file.h5", to="dascore.Patch") is dascore_patch
+
+    def test_different_return_type(self, dascore_patch):
+        """Outputs which are not the declared type are left alone."""
+
+        @output_adapter("dascore.Patch")
+        def get_contents(path):
+            """Return a dataframe rather than a patch."""
+            return dc.spool(dascore_patch).get_contents()
+
+        out = get_contents("file.h5", to="daspy.Section")
+        assert isinstance(out, pd.DataFrame)
+
+    def test_unknown_returns_raises(self):
+        """A misspelled return type is caught at decoration time."""
+        with pytest.raises(ValueError, match="Unknown DAS structure"):
+            output_adapter("dascore.Patc")
+
+    def test_existing_parameter_raises(self):
+        """The keyword must not collide with a parameter of the function."""
+
+        def read(path, to=None):
+            """A reader which already uses the name to."""
+            return path
+
+        with pytest.raises(ValueError, match="already has a parameter"):
+            output_adapter("dascore.Patch")(read)
+
+    def test_custom_kwarg(self, dascore_patch):
+        """The keyword name can be changed to avoid a collision."""
+
+        @output_adapter("dascore.Patch", kwarg="output_type")
+        def read(path, to):
+            """A reader which already uses the name to."""
+            assert to == "somewhere"
+            return dascore_patch
+
+        out = read("file.h5", to="somewhere", output_type="daspy.Section")
+        assert isinstance(out, daspy.Section)
+
+    def test_var_kwargs_not_forwarded(self, dascore_patch):
+        """The keyword is consumed even when the function accepts **kwargs."""
+
+        @output_adapter("dascore.Patch")
+        def read(path, **kwargs):
+            """A reader which accepts arbitrary keywords."""
+            assert "to" not in kwargs
+            return dascore_patch
+
+        out = read("file.h5", to="daspy.Section")
+        assert isinstance(out, daspy.Section)
+
+    def test_signature_shows_keyword(self):
+        """The added keyword appears in the wrapped signature before **kwargs."""
+
+        @output_adapter("dascore.Patch")
+        def read(path, **kwargs):
+            """A reader which accepts arbitrary keywords."""
+
+        params = inspect.signature(read).parameters
+        assert list(params) == ["path", "to", "kwargs"]
+        assert params["to"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert params["to"].default is None
+
+    def test_wrapping(self, read_patch):
+        """Wrapping is idempotent and the original function is accessible."""
+        assert read_patch is not read_patch.raw_function
+        assert output_adapter("dascore.Patch")(read_patch) is read_patch
+        again = output_adapter("dascore.Patch", kwarg="fmt")(read_patch)
+        assert again is not read_patch
+        assert again.raw_function is read_patch.raw_function
+
+    def test_keys_converts_dict_values(self, dascore_patch):
+        """Only the values under keys are converted."""
+
+        @output_adapter("dascore.Patch", keys="a")
+        def read(path):
+            """A reader which returns a dict."""
+            return {"a": dascore_patch, "b": dascore_patch, "c": 1}
+
+        out = read("file.h5", to="daspy.Section")
+        assert isinstance(out["a"], daspy.Section)
+        assert isinstance(out["b"], dc.Patch)
+        assert out["c"] == 1
+
+    def test_stacks_with_adapter(self, daspy_section):
+        """An input adapter and an output adapter can be combined."""
+
+        @adapter("dascore.Patch")
+        @output_adapter("dascore.Patch")
+        def process(patch):
+            """Transform a patch."""
+            assert isinstance(patch, dc.Patch)
+            return patch
+
+        # Without the keyword the output follows the input type.
+        assert isinstance(process(daspy_section), daspy.Section)
+        # With it the caller's choice wins.
+        out = process(daspy_section, to="xdas.DataArray")
+        assert isinstance(out, DataArray)
 
 
 class TestIntegrations:
