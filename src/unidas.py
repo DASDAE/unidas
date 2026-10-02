@@ -18,11 +18,11 @@ from typing import Any, ClassVar, Protocol, TypeVar, runtime_checkable
 import numpy as np
 
 # Explicitly defines unidas' public API.
-__all__ = ("adapter", "convert")
+__all__ = ("adapter", "convert", "output_adapter")
 
 # Keep the version hardcoded so vendored copies report their own version
 # without requiring installed package metadata.
-__version__ = "0.1.6"
+__version__ = "0.1.7"
 
 # Define the urls to each project to provide helpful error messages.
 PROJECT_URLS = {
@@ -991,6 +991,106 @@ def adapter(to: str, arg: int | str = 0, keys: str | tuple[str, ...] | None = No
         # Also attach a private flag indicating the function has already
         # been wrapped. We don't want to allow this more than once.
         _decorator._unidas_to = (to, arg, keys)
+
+        return _decorator
+
+    return _outer
+
+
+def _target_key(target) -> str:
+    """Resolve a conversion target given as a key, a class, or an instance."""
+    if isinstance(target, str):
+        return target
+    return get_class_key(target if inspect.isclass(target) else type(target))
+
+
+def output_adapter(
+    returns: str, kwarg: str = "to", keys: str | tuple[str, ...] | None = None
+):
+    """
+    A decorator to let callers choose the DAS data structure a function returns.
+
+    This is the complement of `adapter` for functions which create DAS data
+    rather than transform it, such as readers. The wrapped function gains a
+    keyword argument (``to`` by default) naming the desired output type. The
+    wrapped function never sees this argument; when it is omitted the output
+    is returned unchanged.
+
+    Parameters
+    ----------
+    returns
+        The DAS data structure the wrapped function returns. Outputs of any
+        other type are returned untouched.
+    kwarg
+        The name of the keyword argument added to the wrapped function. The
+        wrapped function must not already have a parameter with this name.
+    keys
+        If provided, and the wrapped function returns a mapping, the DAS
+        structures stored under these keys are converted and a dict is
+        returned.
+
+    Returns
+    -------
+    The wrapped function whose output type the caller can choose.
+
+    Notes
+    -----
+    - The target can be given as a string key (e.g. "dascore.Patch"), a class,
+      or an instance of the desired type.
+    - The original function can be accessed via the 'raw_function' attribute.
+    """
+
+    def _outer(func):
+        # Check if the appropriate decorator has already been applied and
+        # just return if so.
+        if getattr(func, "_unidas_returns", None) == (returns, kwarg, keys):
+            return func
+
+        sig = inspect.signature(func)
+        if kwarg in sig.parameters:
+            msg = (
+                f"{getattr(func, '__name__', func)!r} already has a parameter "
+                f"named {kwarg!r}; pass a different name with kwarg="
+            )
+            raise ValueError(msg)
+
+        @wraps(func)
+        def _decorator(*args, **kwargs):
+            """Simple decorator for wrapping."""
+            target = kwargs.pop(kwarg, None)
+            func_out = func(*args, **kwargs)
+            if target is None:
+                return func_out
+            to = _target_key(target)
+            # Optionally convert the values of a returned mapping.
+            if keys is not None and isinstance(func_out, Mapping):
+                return _convert_values(func_out, keys, lambda x: convert(x, to))
+            cls_out = func_out if inspect.isclass(func_out) else type(func_out)
+            # Leave outputs of other types (e.g. a dataframe) alone.
+            if get_class_key(cls_out) != returns:
+                return func_out
+            return convert(func_out, to)
+
+        # Advertise the new keyword in the signature so it shows up in help().
+        # A keyword-only parameter must precede any **kwargs.
+        params = list(sig.parameters.values())
+        new_param = inspect.Parameter(
+            kwarg, inspect.Parameter.KEYWORD_ONLY, default=None
+        )
+        kinds = [p.kind for p in params]
+        index = (
+            kinds.index(inspect.Parameter.VAR_KEYWORD)
+            if inspect.Parameter.VAR_KEYWORD in kinds
+            else len(params)
+        )
+        params.insert(index, new_param)
+        _decorator.__signature__ = sig.replace(parameters=params)
+        # Following the convention of pydantic, we attach the raw function
+        # to the wrapper in case it needs to be accessed later.
+        _decorator.raw_function = getattr(func, "raw_function", func)
+        # Also attach a private flag indicating the function has already
+        # been wrapped. We don't want to allow this more than once.
+        _decorator._unidas_returns = (returns, kwarg, keys)
 
         return _decorator
 
