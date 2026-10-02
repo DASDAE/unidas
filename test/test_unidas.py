@@ -765,6 +765,11 @@ class TestOutputAdapter:
         out = get_contents("file.h5", to="daspy.Section")
         assert isinstance(out, pd.DataFrame)
 
+    def test_unknown_returns_raises(self):
+        """A misspelled return type is caught at decoration time."""
+        with pytest.raises(ValueError, match="Unknown DAS structure"):
+            output_adapter("dascore.Patc")
+
     def test_existing_parameter_raises(self):
         """The keyword must not collide with a parameter of the function."""
 

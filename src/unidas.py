@@ -1019,13 +1019,14 @@ def output_adapter(
     Parameters
     ----------
     returns
-        The DAS data structure the wrapped function returns. Outputs of any
-        other type are returned untouched.
+        The DAS data structure the wrapped function returns. Must be a
+        registered structure. Outputs of any other type are returned
+        untouched, except mappings handled by ``keys``.
     kwarg
         The name of the keyword argument added to the wrapped function. The
         wrapped function must not already have a parameter with this name.
     keys
-        If provided, and the wrapped function returns a mapping, the DAS
+        If provided, and the wrapped function returns a mapping, any DAS
         structures stored under these keys are converted and a dict is
         returned.
 
@@ -1037,8 +1038,17 @@ def output_adapter(
     -----
     - The target can be given as a string key (e.g. "dascore.Patch"), a class,
       or an instance of the desired type.
+    - When combined with `adapter`, apply `output_adapter` closest to the
+      function so it sees the native output before `adapter` converts it
+      back to the input type.
     - The original function can be accessed via the 'raw_function' attribute.
     """
+    # Catch a misspelled type now, otherwise the caller's requested
+    # conversion would silently never happen.
+    if returns not in Converter._registry:
+        msg = f"Unknown DAS structure {returns!r}; expected one of "
+        msg += f"{sorted(Converter._registry)}"
+        raise ValueError(msg)
 
     def _outer(func):
         # Check if the appropriate decorator has already been applied and
