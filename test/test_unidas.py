@@ -62,6 +62,8 @@ DASPY_UNSUPPORTED_DASCORE_EXAMPLES = {
     "forge_dts": "evenly sampled",
     "ricker_moveout": "absolute datetime",
 }
+# Formats whose coordinate values can be checked sample by sample.
+COORD_TARGETS = ("dascore.Patch", "xdas.DataArray", "xarray.DataArray")
 
 
 # --- Tests for unidas utilities.
@@ -75,6 +77,13 @@ def assert_array_equal_with_nan(array_1, array_2):
         assert np.allclose(array_1, array_2, equal_nan=True)
     else:
         assert np.array_equal(array_1, array_2)
+
+
+def get_coord_values(obj, name):
+    """Return the values of a coordinate from any of COORD_TARGETS."""
+    if isinstance(obj, dc.Patch):
+        return obj.get_array(name)
+    return np.asarray(obj.coords[name].values)
 
 
 @pytest.fixture(params=BASE_FORMATS)
@@ -394,6 +403,46 @@ class TestDASPySection:
         out = convert(daspy_section, to=format_name)
         assert isinstance(out, NAME_CLASS_MAP[format_name])
 
+    @pytest.mark.parametrize("target", COORD_TARGETS)
+    def test_coordinates_end_on_last_sample(self, target):
+        """DASPy's exclusive end_time/end_distance must not stretch the axes."""
+        start = daspy.DASDateTime(2020, 1, 1, tzinfo=datetime.UTC)
+        section = daspy.Section(
+            np.zeros((100, 400)), dx=2, fs=200, start_distance=10, start_time=start
+        )
+        expected_time = np.datetime64("2020-01-01") + np.arange(
+            400, dtype=np.int64
+        ) * np.timedelta64(5, "ms")
+
+        out = convert(section, to=target)
+
+        time = get_coord_values(out, "time").astype("datetime64[ns]")
+        np.testing.assert_array_equal(time, expected_time)
+        distance = get_coord_values(out, "distance")
+        np.testing.assert_array_equal(distance, 10 + np.arange(100) * 2)
+
+    def test_round_trip_keeps_sampling(self, daspy_section):
+        """A round trip through xdas keeps DASPy's sampling and extent."""
+        data_array = convert(daspy_section, to="xdas.DataArray")
+
+        out = convert(data_array, to="daspy.Section")
+
+        assert out.fs == daspy_section.fs
+        assert out.dx == daspy_section.dx
+        assert out.start_distance == daspy_section.start_distance
+        assert out.start_time == daspy_section.start_time
+        assert out.end_time == daspy_section.end_time
+
+    @pytest.mark.parametrize("target", COORD_TARGETS)
+    def test_numeric_start_time(self, target):
+        """DASPy's default numeric start_time becomes relative seconds."""
+        section = daspy.Section(np.zeros((3, 5)), dx=1, fs=10)
+
+        out = convert(section, to=target)
+
+        time = get_coord_values(out, "time")
+        np.testing.assert_allclose(time, np.arange(5) / 10)
+
 
 class TestXdasDataArray:
     """Tests for converting xdas DataArrays."""
@@ -499,6 +548,27 @@ class TestLightGuideBlast:
         assert out.channel_spacing == lightguide_blast.channel_spacing
         assert out.start_channel == lightguide_blast.start_channel
         assert out.sampling_rate == lightguide_blast.sampling_rate
+
+    @pytest.mark.parametrize("target", COORD_TARGETS)
+    def test_coordinates_end_on_last_sample(self, target):
+        """Lightguide's exclusive end_time/end_channel must not stretch the axes."""
+        blast = Blast(
+            data=np.zeros((100, 400)),
+            start_time=datetime.datetime(2020, 1, 1, tzinfo=datetime.UTC),
+            sampling_rate=200,
+            start_channel=5,
+            channel_spacing=2,
+        )
+        expected_time = np.datetime64("2020-01-01") + np.arange(
+            400, dtype=np.int64
+        ) * np.timedelta64(5, "ms")
+
+        out = convert(blast, to=target)
+
+        time = get_coord_values(out, "time").astype("datetime64[ns]")
+        np.testing.assert_array_equal(time, expected_time)
+        distance = get_coord_values(out, "distance")
+        np.testing.assert_array_equal(distance, 10 + np.arange(100) * 2)
 
     def test_convert_blast_to_other(self, lightguide_blast, format_name):
         """Test that the base blast can be converted to all formats."""

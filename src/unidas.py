@@ -22,7 +22,7 @@ __all__ = ("adapter", "convert")
 
 # Keep the version hardcoded so vendored copies report their own version
 # without requiring installed package metadata.
-__version__ = "0.1.6"
+__version__ = "0.1.7"
 
 # Define the urls to each project to provide helpful error messages.
 PROJECT_URLS = {
@@ -746,18 +746,26 @@ class DASPySectionConverter(Converter):
         """Convert dascore patch to base representation."""
         # TODO figure out how to get units attached, or are they assumed?
         dims = ("distance", "time")  # TODO is dim order always consistent?
-        start_time = section.start_time.utc().to_datetime()
-        end_time = section.end_time.utc().to_datetime()
+        n_channels, n_samples = section.data.shape
+        # DASPy's end_time and end_distance are exclusive, so the tie values
+        # are computed from the last sample instead.
+        start_time = section.start_time
+        end_time = start_time + (n_samples - 1) * section.dt
+        # A numeric start_time is DASPy's relative time in seconds.
+        if isinstance(start_time, datetime.datetime):
+            start_time = start_time.utc().to_datetime()
+            end_time = end_time.utc().to_datetime()
+        end_distance = section.start_distance + (n_channels - 1) * section.dx
 
         time_coord = EvenlySampledCoordinate(
             tie_values=(start_time, end_time),
-            tie_indices=(0, section.data.shape[1] - 1),
+            tie_indices=(0, n_samples - 1),
             step=section.dt,
             dims=("time",),
         )
         distance_coord = EvenlySampledCoordinate(
-            tie_values=(section.start_distance, section.end_distance),
-            tie_indices=(0, section.data.shape[0] - 1),
+            tie_values=(section.start_distance, end_distance),
+            tie_indices=(0, n_channels - 1),
             step=section.dx,
             dims=("distance",),
         )
@@ -781,18 +789,22 @@ class LightGuideConverter(Converter):
 
     def _get_coords(self, blast):
         """Get base coordinates from Blast."""
+        # Blast's end_channel and end_time are exclusive, so the tie values
+        # are computed from the last sample instead.
+        n_channels, n_samples = blast.data.shape
         # Need to convert channel numbers to distance.
         start_distance = blast.start_channel * blast.channel_spacing
-        end_distance = blast.end_channel * blast.channel_spacing
+        end_distance = start_distance + (n_channels - 1) * blast.channel_spacing
+        duration = datetime.timedelta(seconds=(n_samples - 1) * blast.delta_t)
         distance = EvenlySampledCoordinate(
             tie_values=(start_distance, end_distance),
-            tie_indices=(0, blast.data.shape[0] - 1),
+            tie_indices=(0, n_channels - 1),
             step=blast.channel_spacing,
             dims=("distance",),
         )
         time = EvenlySampledCoordinate(
-            tie_values=(blast.start_time, blast.end_time),
-            tie_indices=(0, blast.data.shape[1] - 1),
+            tie_values=(blast.start_time, blast.start_time + duration),
+            tie_indices=(0, n_samples - 1),
             step=blast.delta_t,
             dims=("time",),
         )
