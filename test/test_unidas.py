@@ -385,6 +385,26 @@ class TestDASCorePatch:
         assert out.fs == 1
 
 
+class _CountingSpool:
+    """A spool proxy recording which patches are loaded."""
+
+    def __init__(self, spool, loads):
+        self._spool, self.loads = spool, loads
+
+    def __len__(self):
+        return len(self._spool)
+
+    def __getitem__(self, index):
+        self.loads.append(index)
+        return self._spool[index]
+
+    def sort(self, *args):
+        return _CountingSpool(self._spool.sort(*args), self.loads)
+
+    def get_contents(self):
+        return self._spool.get_contents()
+
+
 class TestDASCoreSpool:
     """Tests for lazily converting contiguous DASCore spools."""
 
@@ -394,21 +414,26 @@ class TestDASCoreSpool:
         patch = dc.get_example_patch("random_das", shape=(30, 2000))
         return patch.transpose(*request.param)
 
-    @pytest.fixture(scope="class", params=["memory", "directory"])
-    def spool(self, patch, request, tmp_path_factory):
-        """A contiguous spool of the patch, in memory or on disk."""
-        spool = dc.spool([patch]).chunk(time=2.0)
-        if request.param == "memory":
-            return spool
-        path = tmp_path_factory.mktemp("spool")
-        for num, sub_patch in enumerate(spool):
-            sub_patch.io.write(path / f"{num}.h5", "dasdae")
-        return dc.spool(path).update()
-
     @pytest.fixture(scope="class")
     def chunks(self, patch):
         """The patch split into four 2 second patches."""
         return list(dc.spool([patch]).chunk(time=2.0))
+
+    @pytest.fixture(scope="class", params=["memory", "directory"])
+    def spool(self, chunks, request, tmp_path_factory):
+        """A contiguous spool of the patch, in memory or on disk."""
+        if request.param == "memory":
+            return dc.spool(chunks)
+        path = tmp_path_factory.mktemp("spool")
+        for num, sub_patch in enumerate(chunks):
+            sub_patch.io.write(path / f"{num}.h5", "dasdae")
+        return dc.spool(path).update()
+
+    @pytest.fixture(scope="class")
+    def sub_spool(self, chunks):
+        """A spool of a subclass, like released DASCore's MemorySpool."""
+        spool = dc.spool(chunks)
+        return type("MemorySpool", (type(spool),), {})(chunks)
 
     def test_lazy_xdas(self, spool, patch):
         """The spool converts to a lazy xdas array equal to the patch."""
@@ -419,74 +444,82 @@ class TestDASCoreSpool:
         assert np.array_equal(np.asarray(out.data), patch.data)
         for name in ("time", "distance"):
             assert np.array_equal(get_coord_values(out, name), patch.get_array(name))
+        assert isinstance(convert(spool, "dascore.Patch").data, np.ndarray)
 
     def test_indexing(self, spool, patch):
-        """Slices (across patches, past the end, stepped, reversed) and integers."""
+        """Slices (across patches, empty, stepped, reversed) and integers."""
         array = convert(spool, "xdas.DataArray").data
         time_keys = [slice(490, 510), slice(None, 3), slice(1990, None, 3)]
-        time_keys += [slice(2000, None), slice(5000, 5010), slice(None, None, -1), -1]
+        time_keys += [slice(2000, None), slice(5000, 5010), slice(500, 500)]
+        time_keys += [slice(1200, 800), slice(None, None, -1), -1]
         for time_key in time_keys:
             key = [slice(2, 9)] * 2
             key[patch.dims.index("time")] = time_key
             assert np.array_equal(array[tuple(key)], patch.data[tuple(key)])
 
     def test_loads_each_patch_once(self, spool):
-        """Reading forward in time loads each patch once and drops old ones."""
-        array = convert(spool, "xdas.DataArray").data
-        loads, load = [], array._load
-        array._load = lambda i: loads.append(i) or load(i)
+        """Conversion loads one patch; reading forward loads each once."""
+        loads = []
+        converter = Converter._registry["dascore.Spool"]
+        array = converter.to_base(_CountingSpool(spool, loads)).data
+        assert loads == [0]
         axis = array._axis
         for start in range(0, array.shape[axis], 100):
             key = [slice(None)] * 2
             key[axis] = slice(max(start - 50, 0), start + 150)
             array[tuple(key)]
-        # The first patch is loaded once during conversion.
-        assert loads == list(range(1, len(spool)))
+        assert loads == list(range(len(spool)))
         assert list(array._cache) == [len(spool) - 1]
 
     def test_unsorted(self, chunks, patch):
         """Patches are sorted by time."""
         spool = dc.spool([chunks[2], chunks[0], chunks[3], chunks[1]])
-        assert np.array_equal(
-            convert(spool, "daspy.Section").data.shape[::-1], (2000, 30)
-        )
         out = convert(spool, "xdas.DataArray")
         assert np.array_equal(np.asarray(out.data), patch.data)
+        assert convert(spool, "daspy.Section").data.size == patch.data.size
 
-    def test_subclass(self, chunks):
-        """Spool subclasses (e.g. released DASCore's MemorySpool) convert."""
-        spool = dc.spool(chunks)
-        sub_spool = type("MemorySpool", (type(spool),), {})(chunks)
+    def test_subclass(self, sub_spool):
+        """Spool subclasses convert, directly, by key and through adapter."""
         out = convert(sub_spool, "xdas.DataArray")
         assert isinstance(out.data, unidas._SpoolArray)
-        assert "dascore.BaseSpool" in Converter._registry
-
-    def test_adapter_returns_unconverted(self, chunks):
-        """Adapted functions can't convert outputs back to a spool."""
-        out = adapter("xdas.DataArray")(lambda x: x)(dc.spool(chunks))
+        out = convert({"a": sub_spool}, "xdas.DataArray", keys="a")
+        assert isinstance(out["a"], DataArray)
+        # Adapted functions can't convert outputs back to a spool.
+        out = adapter("xdas.DataArray")(lambda x: x)(sub_spool)
         assert isinstance(out, DataArray)
+        out = adapter("xdas.DataArray", keys="a")(lambda x: {"a": x})(sub_spool)
+        assert isinstance(out["a"], DataArray)
 
     @pytest.mark.parametrize(
-        "mismatch",
-        ["gap", "small_gap", "distance", "time_step", "dims", "empty"],
+        "mismatch, match",
+        [
+            ("gap", "contiguous"),
+            ("small_gap", "contiguous"),
+            ("distance", "distance"),
+            ("dtype", "dtype"),
+            ("time_step", "time_step"),
+            ("dims", "dims"),
+            ("empty", "empty"),
+        ],
     )
-    def test_mismatch_raises(self, chunks, mismatch):
-        """Spools which aren't one contiguous array raise."""
+    def test_mismatch_raises(self, chunks, mismatch, match):
+        """Spools which aren't one array raise, on conversion or when read."""
         second = {
-            "gap": chunks[2],
-            "small_gap": chunks[1].select(time=(3, None), samples=True),
-            "distance": chunks[1].update_coords(distance_min=100),
-            "time_step": chunks[1].decimate(time=2, filter_type=None),
-            "dims": chunks[1].transpose(*chunks[1].dims[::-1]),
+            "gap": lambda: chunks[2],
+            "small_gap": lambda: chunks[1].select(time=(3, None), samples=True),
+            "distance": lambda: chunks[1].update_coords(distance_min=100),
+            "dtype": lambda: chunks[1].update(data=chunks[1].data.astype(np.float32)),
+            "time_step": lambda: chunks[1].decimate(time=2, filter_type=None),
+            "dims": lambda: chunks[1].transpose(*chunks[1].dims[::-1]),
         }
-        spool = dc.spool([] if mismatch == "empty" else [chunks[0], second[mismatch]])
-        with pytest.raises(ValueError):
-            convert(spool, "xdas.DataArray")
+        patches = [] if mismatch == "empty" else [chunks[0], second[mismatch]()]
+        with pytest.raises(ValueError, match=match):
+            np.asarray(convert(dc.spool(patches), "xdas.DataArray").data)
 
     def test_mismatch_raises_on_load(self, chunks):
-        """Mismatches which the contents can't show raise when loaded."""
+        """Inner distance changes, which min/max can't show, raise when read."""
         distance = chunks[0].get_array("distance").astype(float)
-        distance[1] += 0.5  # Same min/max, different coordinates.
+        distance[1] += 0.5
         spool = dc.spool([chunks[0], chunks[1].update_coords(distance=distance)])
         array = convert(spool, "xdas.DataArray").data
         with pytest.raises(ValueError, match="merge the spool"):

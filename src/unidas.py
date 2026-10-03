@@ -636,6 +636,7 @@ class UnidasBaseDASConverter(Converter):
         """Convert to a dascore patch."""
         dc = optional_import("dascore")
         out = base_das.to_dict(flavor="dascore")
+        out["data"] = np.asarray(out["data"])  # Loads lazy (e.g. spool) data.
         return dc.Patch(**out)
 
     @converts_to("xdas.DataArray")
@@ -759,20 +760,14 @@ class _SpoolArray:
         self.shape, self.dtype, self.ndim = tuple(shape), first.data.dtype, len(shape)
 
     def _load(self, index):
-        """Load a patch's data, checking it fits the first patch."""
+        """Load a patch's data, checking what older spool contents omit."""
         patch, first = self._spool[index], self._first
-        length = self._starts[index + 1] - self._starts[index]
-        fits = (
-            patch.dims == first.dims
-            and patch.data.dtype == self.dtype
-            and patch.shape[self._axis] == length
-            and np.array_equal(
-                patch.get_coord("distance").values, first.get_coord("distance").values
-            )
+        same_distance = np.array_equal(
+            patch.get_coord("distance").values, first.get_coord("distance").values
         )
-        if not fits:
-            msg = f"Spool patch {index} doesn't match the first patch's dims, "
-            msg += "dtype or distance coordinates; merge the spool first."
+        if patch.data.dtype != self.dtype or not same_distance:
+            msg = f"Spool patch {index} doesn't match the first patch's dtype or "
+            msg += "distance coordinates; merge the spool first."
             raise ValueError(msg)
         return patch.data
 
@@ -786,11 +781,12 @@ class _SpoolArray:
         # Find the patches overlapping the requested time range; a range
         # starting at the end selects the last patch (and returns nothing).
         start, stop, step = key[self._axis].indices(self.shape[self._axis])
+        stop = max(start, stop)  # An empty (e.g. reversed) range selects nothing.
         first = min(
             np.searchsorted(self._starts, start, "right"), len(self._starts) - 1
         )
         first -= 1
-        last = max(np.searchsorted(self._starts, max(start, stop)), first + 1)
+        last = max(np.searchsorted(self._starts, stop), first + 1)
         # Reuse patches from the previous read; others are dropped below.
         cache = {i: self._cache.get(i) for i in range(first, last)}
         parts = []
@@ -816,15 +812,18 @@ class DASCoreSpoolConverter(Converter):
     Converter for a contiguous DASCore spool to a lazy array.
 
     Patches must share dims, dtype and distance coordinates, be evenly sampled
-    in time, and follow each other within half a time step. Otherwise, merge
-    the spool first, e.g. with `spool.chunk(time=None)`.
+    in time, and each start one time step (within half a step) after the
+    previous one ends. Otherwise, merge the spool first, e.g. with
+    `spool.chunk(time=None)`. Non-dimensional coordinates and patch attributes
+    are dropped.
 
     Note: this is a prototype which will move into DASCore.
     """
 
     name = "dascore.Spool"
-    # Contents columns which must agree between patches, when present. Patch
-    # data is also checked as it loads, since older DASCore indexes less.
+    # Contents columns which must agree between patches, when present. Each
+    # patch's dtype and distance values are also checked as it loads, since
+    # older DASCore contents omit them and min/max can't show inner changes.
     _shared = ("dims", "dtype", "time_step", "distance_min", "distance_max")
 
     @converts_to("unidas.BaseDAS")
@@ -841,7 +840,7 @@ class DASCoreSpoolConverter(Converter):
         t_min, t_max = df["time_min"].to_numpy(), df["time_max"].to_numpy()
         dt = df["time_step"].to_numpy()[0]
         gaps = np.abs(t_min[1:] - t_max[:-1] - dt)
-        if np.isnat(dt) or np.any(gaps > dt / 2):
+        if not dt > dt * 0 or np.any(gaps > dt / 2):
             msg = "Spool patches must be evenly sampled and contiguous in time."
             raise ValueError(msg)
         starts = np.cumsum([0, *(np.round((t_max - t_min) / dt).astype(int) + 1)])
@@ -849,7 +848,7 @@ class DASCoreSpoolConverter(Converter):
         first = spool[0]
         coords = {d: first.get_coord(d) for d in first.dims}
         coords["time"] = coords["time"].change_length(int(starts[-1]))
-        to_coord = DASCorePatchConverter()._to_base_coords
+        to_coord = Converter._registry["dascore.Patch"]._to_base_coords
         coords = {d: to_coord(c, (d,)) for d, c in coords.items()}
         data = _SpoolArray(spool, first, starts)
         return BaseDAS(data=data, dims=first.dims, coords=coords, attrs={})
@@ -1119,14 +1118,16 @@ def adapter(to: str, arg: int | str = 0, keys: str | tuple[str, ...] | None = No
             input_obj = convert(obj, to)
             where[slot] = input_obj
             func_out = func(*args, **kwargs)
+            # Return outputs which can't convert back (e.g. to a spool) as is.
+            if not _is_target(key):
+                return func_out
             # Optionally convert the values of a returned mapping.
             if keys is not None and isinstance(func_out, Mapping):
                 return _convert_values(func_out, keys, lambda x: convert(x, key))
             cls_out = func_out if inspect.isclass(func_out) else type(func_out)
             # Sometimes a function can return a different type than its input
             # e.g., a dataframe. In this case just return output.
-            # Also return outputs which can't convert back (e.g. to a spool).
-            if get_class_key(cls_out) != to or not _is_target(key):
+            if get_class_key(cls_out) != to:
                 return func_out
             output_obj = convert(func_out, key)
             # Apply class specific logic to compensate for lossy conversion.
