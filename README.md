@@ -189,7 +189,7 @@ DASPy sampling fields are derived from coordinates and take precedence over conf
 
 Xarray `Dataset` objects, storage encoding (including CF time-unit conventions), and reconstruction of custom indexes are not supported. Data is not explicitly computed on the xarray–internal representation path, but other libraries may require eager arrays.
 
-A contiguous DASCore spool converts lazily to a `unidas.SpoolArray`, which loads patches only when sliced, so `convert(spool, "xdas.DataArray")` can feed chunked processors such as SeisBench without loading the whole spool. Patches must share dims, time step, and distance coordinates and follow each other in time within half a step; otherwise a `ValueError` is raised (merge the spool first, e.g. with `spool.chunk(time=None)`). Converting a spool to libraries that need eager arrays loads all of its data. This support is a prototype which will move into DASCore.
+A contiguous DASCore spool converts lazily to xdas, so `convert(spool, "xdas.DataArray")` can feed chunked processors such as SeisBench without loading the whole spool; other targets may load all of its data. If its patches are not contiguous a `ValueError` is raised; merge the spool first, e.g. with `spool.chunk(time=None)`. This support is a prototype which will move into DASCore.
 
 ## Making releases
 

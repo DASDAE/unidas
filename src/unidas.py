@@ -106,7 +106,7 @@ def get_class_key(object_class) -> str:
     return f"{module_name}.{class_name}"
 
 
-def get_registered_key(object_class) -> str:
+def _get_registered_key(object_class) -> str:
     """
     Get the key of the first class in object_class's MRO with a converter.
 
@@ -483,7 +483,7 @@ class BaseDAS:
             The dimension names for desired order.
         """
         axes = tuple(self.dims.index(x) for x in dims)
-        new_data = self.data.transpose(axes)
+        new_data = np.transpose(self.data, axes)
         return BaseDAS(
             data=new_data,
             coords=self.coords,
@@ -738,7 +738,7 @@ class DASCorePatchConverter(Converter):
         return BaseDAS(**out)
 
 
-class SpoolArray:
+class _SpoolArray:
     """
     A lazy array over a contiguous DASCore spool.
 
@@ -749,11 +749,32 @@ class SpoolArray:
     Note: this is a prototype which will move into DASCore.
     """
 
-    def __init__(self, spool, dims, shape, dtype, starts):
+    def __init__(self, spool, first, starts):
         # starts holds each patch's first time index, plus the total length.
-        self._spool, self._starts, self._cache = spool, starts, {}
-        self._axis = dims.index("time")
-        self.shape, self.dtype, self.ndim = shape, dtype, len(shape)
+        self._spool, self._first, self._starts = spool, first, starts
+        self._axis = first.dims.index("time")
+        self._cache = {0: first.data}
+        shape = list(first.shape)
+        shape[self._axis] = int(starts[-1])
+        self.shape, self.dtype, self.ndim = tuple(shape), first.data.dtype, len(shape)
+
+    def _load(self, index):
+        """Load a patch's data, checking it fits the first patch."""
+        patch, first = self._spool[index], self._first
+        length = self._starts[index + 1] - self._starts[index]
+        fits = (
+            patch.dims == first.dims
+            and patch.data.dtype == self.dtype
+            and patch.shape[self._axis] == length
+            and np.array_equal(
+                patch.get_coord("distance").values, first.get_coord("distance").values
+            )
+        )
+        if not fits:
+            msg = f"Spool patch {index} doesn't match the first patch's dims, "
+            msg += "dtype or distance coordinates; merge the spool first."
+            raise ValueError(msg)
+        return patch.data
 
     def __getitem__(self, key):
         # Normalize the key to one entry per axis.
@@ -762,15 +783,19 @@ class SpoolArray:
         slices = all(isinstance(k, slice) for k in key)
         if not slices or (key[self._axis].step or 1) < 0:
             return np.asarray(self)[tuple(key)]  # Uncommon; loads everything.
-        # Find the patches overlapping the requested time range.
+        # Find the patches overlapping the requested time range; a range
+        # starting at the end selects the last patch (and returns nothing).
         start, stop, step = key[self._axis].indices(self.shape[self._axis])
-        first = np.searchsorted(self._starts, start, "right") - 1
+        first = min(
+            np.searchsorted(self._starts, start, "right"), len(self._starts) - 1
+        )
+        first -= 1
         last = max(np.searchsorted(self._starts, max(start, stop)), first + 1)
         # Reuse patches from the previous read; others are dropped below.
         cache = {i: self._cache.get(i) for i in range(first, last)}
         parts = []
         for i, data in cache.items():
-            cache[i] = data if data is not None else self._spool[i].data
+            cache[i] = data if data is not None else self._load(i)
             # Select the other axes per patch so only requested data is copied.
             local, offset = list(key), self._starts[i]
             local[self._axis] = slice(max(start - offset, 0), stop - offset)
@@ -782,27 +807,31 @@ class SpoolArray:
         return out[(slice(None),) * self._axis + (slice(None, None, step),)]
 
     def __array__(self, dtype=None, copy=None):
-        return np.asarray(self[()], dtype=dtype)
+        out = np.asarray(self[()], dtype=dtype)
+        return out.copy() if copy else out
 
 
 class DASCoreSpoolConverter(Converter):
     """
     Converter for a contiguous DASCore spool to a lazy array.
 
-    Patches must share dims, dtype, time step and distance coordinates, and
-    follow each other in time within half a step. Otherwise, merge the spool
-    first, e.g. with `spool.chunk(time=None)`.
+    Patches must share dims, dtype and distance coordinates, be evenly sampled
+    in time, and follow each other within half a time step. Otherwise, merge
+    the spool first, e.g. with `spool.chunk(time=None)`.
 
     Note: this is a prototype which will move into DASCore.
     """
 
     name = "dascore.Spool"
-    # Contents columns which must agree between patches, when present.
-    _shared = ("dims", "time_step", "distance_min", "distance_max", "distance_step")
+    # Contents columns which must agree between patches, when present. Patch
+    # data is also checked as it loads, since older DASCore indexes less.
+    _shared = ("dims", "dtype", "time_step", "distance_min", "distance_max")
 
     @converts_to("unidas.BaseDAS")
     def to_base(self, spool) -> BaseDAS:
         """Convert a dascore spool to a lazy base representation."""
+        if not len(spool):
+            raise ValueError("Cannot convert an empty spool.")
         spool = spool.sort("time")
         df = spool.get_contents()
         shared = [c for c in self._shared if c in df]
@@ -811,29 +840,18 @@ class DASCoreSpoolConverter(Converter):
             raise ValueError(msg)
         t_min, t_max = df["time_min"].to_numpy(), df["time_max"].to_numpy()
         dt = df["time_step"].to_numpy()[0]
-        if np.any(np.abs(t_min[1:] - t_max[:-1] - dt) > dt / 2):
-            msg = "Spool patches are not contiguous in time; merge them first."
+        gaps = np.abs(t_min[1:] - t_max[:-1] - dt)
+        if np.isnat(dt) or np.any(gaps > dt / 2):
+            msg = "Spool patches must be evenly sampled and contiguous in time."
             raise ValueError(msg)
         starts = np.cumsum([0, *(np.round((t_max - t_min) / dt).astype(int) + 1)])
-        # Older DASCore versions don't index distance or dtype, so use a patch.
+        # Take the coordinates from the first patch, stretching time.
         first = spool[0]
-        distance = first.get_coord("distance")
-        n_time = int(starts[-1])
-        coords = {
-            "time": EvenlySampledCoordinate(
-                tie_values=(t_min[0], t_min[0] + (n_time - 1) * dt),
-                tie_indices=(0, n_time - 1),
-                step=dt,
-                dims=("time",),
-            ),
-            "distance": DASCorePatchConverter()._to_base_coords(
-                distance, ("distance",)
-            ),
-        }
-        sizes = {"time": n_time, "distance": len(distance)}
-        shape = tuple(sizes[d] for d in first.dims)
-        data = SpoolArray(spool, first.dims, shape, first.data.dtype, starts)
-        data._cache = {0: first.data}
+        coords = {d: first.get_coord(d) for d in first.dims}
+        coords["time"] = coords["time"].change_length(int(starts[-1]))
+        to_coord = DASCorePatchConverter()._to_base_coords
+        coords = {d: to_coord(c, (d,)) for d, c in coords.items()}
+        data = _SpoolArray(spool, first, starts)
         return BaseDAS(data=data, dims=first.dims, coords=coords, attrs={})
 
 
@@ -1045,7 +1063,7 @@ def _convert_values(obj, keys, func):
         if key not in out:
             continue
         value = out[key]
-        if get_class_key(type(value)) in Converter._registry:
+        if _get_registered_key(type(value)) in Converter._registry:
             out[key] = func(value)
     return out
 
@@ -1096,7 +1114,7 @@ def adapter(to: str, arg: int | str = 0, keys: str | tuple[str, ...] | None = No
             where, slot = (kwargs, name) if name in kwargs else (args, pos)
             obj = where[slot]
             cls = obj if inspect.isclass(obj) else type(obj)
-            key = get_class_key(cls)
+            key = _get_registered_key(cls)
             conversion_class: Converter = Converter._registry[key]
             input_obj = convert(obj, to)
             where[slot] = input_obj
@@ -1107,7 +1125,8 @@ def adapter(to: str, arg: int | str = 0, keys: str | tuple[str, ...] | None = No
             cls_out = func_out if inspect.isclass(func_out) else type(func_out)
             # Sometimes a function can return a different type than its input
             # e.g., a dataframe. In this case just return output.
-            if get_class_key(cls_out) != to:
+            # Also return outputs which can't convert back (e.g. to a spool).
+            if get_class_key(cls_out) != to or not _is_target(key):
                 return func_out
             output_obj = convert(func_out, key)
             # Apply class specific logic to compensate for lossy conversion.
@@ -1125,6 +1144,11 @@ def adapter(to: str, arg: int | str = 0, keys: str | tuple[str, ...] | None = No
         return _decorator
 
     return _outer
+
+
+def _is_target(key) -> bool:
+    """Return True if some converter can convert to key."""
+    return any(key in targets for targets in Converter._graph.values())
 
 
 def _target_key(target) -> str:
@@ -1258,7 +1282,7 @@ def convert(obj, to: str, keys: str | tuple[str, ...] | None = None):
     if keys is not None and isinstance(obj, Mapping):
         return _convert_values(obj, keys, lambda x: convert(x, to))
     obj_class = obj if inspect.isclass(obj) else type(obj)
-    key = get_registered_key(obj_class)
+    key = _get_registered_key(obj_class)
     # No conversion needed, simply return object.
     if key == to:
         return obj
